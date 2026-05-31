@@ -1,0 +1,18 @@
+[package]
+name = "kardia-ble"
+version = "0.1.0"
+description = "BLE capture and protocol discovery boundaries for Kardia devices."
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+btleplug.workspace = true
+futures.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

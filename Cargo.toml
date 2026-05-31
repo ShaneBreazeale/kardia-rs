@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/kardia-ble",
+    "crates/kardia-cli",
+    "crates/kardia-core",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["kardia-rs contributors"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ShaneBreazeale/kardia-rs"
+rust-version = "1.82"
+
+[workspace.dependencies]
+anyhow = "1"
+btleplug = "0.11"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+uuid = "1"

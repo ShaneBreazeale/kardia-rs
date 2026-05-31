@@ -1,0 +1,20 @@
+[package]
+name = "kardia-cli"
+version = "0.1.0"
+description = "Command-line workbench for Kardia ECG capture and study."
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "kardia"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+kardia-ble = { path = "../kardia-ble" }
+kardia-core = { path = "../kardia-core" }
+tokio.workspace = true
