@@ -1,4 +1,5 @@
 use crate::ecg_analysis::{self, AnalysisQuality, EcgMeasurements};
+use crate::ecg_model::{self, ModelAssessment, ModelDecision};
 use anyhow::{anyhow, bail, Context, Result};
 use kardia_ble::{
     decode_m2_notification, uuid_matches, RawCaptureFile,
@@ -44,6 +45,7 @@ struct ReportData {
     mv_per_count: f64,
     inverted: bool,
     measurements: EcgMeasurements,
+    model_assessment: Option<ModelAssessment>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,9 +59,17 @@ pub fn render(
     out: &Path,
     options: ReportOptions,
     source_label: Option<&str>,
+    model_manifest: Option<&Path>,
 ) -> Result<()> {
     validate_options(options)?;
-    let report = decode_report_data(input, options)?;
+    let mut report = decode_report_data(input, options)?;
+    if let Some(manifest_path) = model_manifest {
+        report.model_assessment = Some(ecg_model::classify(
+            &report.leads_mv,
+            report.measurements.quality,
+            manifest_path,
+        )?);
+    }
     let source_label = match source_label {
         Some(label) if label.trim().is_empty() => bail!("--source-label must not be empty"),
         Some(label) => Cow::Borrowed(label),
@@ -111,6 +121,16 @@ pub fn render(
         "experimental measurements: {}",
         console_measurements(&report.measurements)
     );
+    if let Some(assessment) = &report.model_assessment {
+        println!(
+            "research classifier: {} | SIN={:.1}% AF={:.1}% OTHER={:.1}% | model={}",
+            assessment.summary(),
+            assessment.probabilities[0] * 100.0,
+            assessment.probabilities[1] * 100.0,
+            assessment.probabilities[2] * 100.0,
+            assessment.model_id,
+        );
+    }
     Ok(())
 }
 
@@ -222,6 +242,7 @@ fn decode_report_data(input: &Path, options: ReportOptions) -> Result<ReportData
         mv_per_count: options.mv_per_count,
         inverted: options.invert,
         measurements,
+        model_assessment: None,
     })
 }
 
@@ -375,11 +396,21 @@ fn render_svg(report: &ReportData, source_label: &str) -> String {
         }
     }
     writeln!(svg, "</g>").unwrap();
+    let has_model = report.model_assessment.is_some();
+    let measurement_x = if has_model { 140.0 } else { 174.0 };
+    let measurement_width = if has_model { 72.0 } else { 113.0 };
     writeln!(
         svg,
-        r##"<rect x="174" y="4" width="113" height="27" rx="1" fill="#ffffff" stroke="#667085" stroke-width="0.25"/>"##
+        r##"<rect x="{measurement_x}" y="4" width="{measurement_width}" height="27" rx="1" fill="#ffffff" stroke="#667085" stroke-width="0.25"/>"##
     )
     .unwrap();
+    if has_model {
+        writeln!(
+            svg,
+            r##"<rect x="214" y="4" width="73" height="27" rx="1" fill="#ffffff" stroke="#667085" stroke-width="0.25"/>"##
+        )
+        .unwrap();
+    }
 
     writeln!(
         svg,
@@ -413,22 +444,36 @@ fn render_svg(report: &ReportData, source_label: &str) -> String {
         report.speed_mm_s, report.gain_mm_mv
     )
     .unwrap();
+    let measurement_text_x = measurement_x + 3.0;
+    let measurement_right_x = measurement_x + measurement_width - 3.0;
+    let measurement_title = if has_model {
+        "MEASUREMENTS - EXPERIMENTAL"
+    } else {
+        "AUTOMATED MEASUREMENTS - EXPERIMENTAL"
+    };
     writeln!(
         svg,
-        r##"<text x="177" y="9" font-size="3.0" font-weight="700" fill="#b42318">AUTOMATED MEASUREMENTS - EXPERIMENTAL</text>"##
+        r##"<text x="{measurement_text_x}" y="9" font-size="{}" font-weight="700" fill="#b42318">{measurement_title}</text>"##,
+        if has_model { 2.5 } else { 3.0 }
     )
     .unwrap();
     writeln!(
         svg,
-        r#"<text x="284" y="9" font-size="2.5" text-anchor="end">technical quality: {}</text>"#,
+        r#"<text x="{measurement_right_x}" y="9" font-size="2.2" text-anchor="end">Q: {}</text>"#,
         quality_label(report.measurements.quality)
     )
     .unwrap();
     let rows = measurement_rows(&report.measurements);
+    let measurement_second_column = if has_model {
+        measurement_x + 37.0
+    } else {
+        measurement_x + 57.0
+    };
+    let measurement_font_size = if has_model { 2.25 } else { 3.0 };
     for (index, row) in rows[..3].iter().enumerate() {
         writeln!(
             svg,
-            r#"<text x="177" y="{}" font-size="3.0" font-family="Courier New,Courier,monospace">{}</text>"#,
+            r#"<text x="{measurement_text_x}" y="{}" font-size="{measurement_font_size}" font-family="Courier New,Courier,monospace">{}</text>"#,
             15 + index * 6,
             escape_xml(row)
         )
@@ -437,11 +482,27 @@ fn render_svg(report: &ReportData, source_label: &str) -> String {
     for (index, row) in rows[3..].iter().enumerate() {
         writeln!(
             svg,
-            r#"<text x="231" y="{}" font-size="3.0" font-family="Courier New,Courier,monospace">{}</text>"#,
+            r#"<text x="{measurement_second_column}" y="{}" font-size="{measurement_font_size}" font-family="Courier New,Courier,monospace">{}</text>"#,
             15 + index * 6,
             escape_xml(row)
         )
         .unwrap();
+    }
+    if let Some(assessment) = &report.model_assessment {
+        writeln!(
+            svg,
+            r##"<text x="217" y="9" font-size="2.6" font-weight="700" fill="#b42318">ML RHYTHM SIMILARITY - RESEARCH</text>"##
+        )
+        .unwrap();
+        for (index, row) in model_rows(assessment).iter().enumerate() {
+            writeln!(
+                svg,
+                r#"<text x="217" y="{}" font-size="2.25" font-family="Courier New,Courier,monospace">{}</text>"#,
+                14 + index * 5,
+                escape_xml(row)
+            )
+            .unwrap();
+        }
     }
     for (lead_index, name) in LEAD_NAMES.iter().enumerate() {
         writeln!(
@@ -458,7 +519,7 @@ fn render_svg(report: &ReportData, source_label: &str) -> String {
     .unwrap();
     writeln!(
         svg,
-        r#"<text x="10" y="202" font-size="3.0">Six limb leads only - V1 through V6 were not recorded. Automated measurements are experimental; not for diagnosis or treatment.</text>"#
+        r#"<text x="10" y="202" font-size="3.0">Six limb leads only - V1 through V6 absent. Measurements and ML similarity are experimental; not for diagnosis or treatment.</text>"#
     )
     .unwrap();
     writeln!(svg, "</g></svg>").unwrap();
@@ -519,14 +580,42 @@ fn render_pdf(report: &ReportData, source_label: &str) -> Result<Vec<u8>> {
     }
     layer.set_outline_color(rgb(0.40, 0.44, 0.52));
     layer.set_outline_thickness(0.7);
+    let has_model = report.model_assessment.is_some();
+    let measurement_x = if has_model { 140.0 } else { 174.0 };
+    let measurement_width = if has_model { 72.0 } else { 113.0 };
     let panel = [
-        PointMm { x: 174.0, y: 4.0 },
-        PointMm { x: 287.0, y: 4.0 },
-        PointMm { x: 287.0, y: 31.0 },
-        PointMm { x: 174.0, y: 31.0 },
-        PointMm { x: 174.0, y: 4.0 },
+        PointMm {
+            x: measurement_x,
+            y: 4.0,
+        },
+        PointMm {
+            x: measurement_x + measurement_width,
+            y: 4.0,
+        },
+        PointMm {
+            x: measurement_x + measurement_width,
+            y: 31.0,
+        },
+        PointMm {
+            x: measurement_x,
+            y: 31.0,
+        },
+        PointMm {
+            x: measurement_x,
+            y: 4.0,
+        },
     ];
     layer.add_line(pdf_line(&panel));
+    if has_model {
+        let model_panel = [
+            PointMm { x: 214.0, y: 4.0 },
+            PointMm { x: 287.0, y: 4.0 },
+            PointMm { x: 287.0, y: 31.0 },
+            PointMm { x: 214.0, y: 31.0 },
+            PointMm { x: 214.0, y: 4.0 },
+        ];
+        layer.add_line(pdf_line(&model_panel));
+    }
 
     let regular_font = document
         .add_builtin_font(BuiltinFont::Helvetica)
@@ -603,35 +692,43 @@ fn render_pdf(report: &ReportData, source_label: &str) -> Result<Vec<u8>> {
         PROVISIONAL_SCALE_NOTE,
         rgb(0.706, 0.137, 0.094),
     );
+    let measurement_text_x = measurement_x + 3.0;
+    let measurement_right_x = measurement_x + measurement_width - 3.0;
     add_pdf_text(
         &layer,
         &bold_font,
-        177.0,
+        measurement_text_x,
         9.0,
-        8.0,
-        "AUTOMATED MEASUREMENTS - EXPERIMENTAL",
+        if has_model { 6.5 } else { 8.0 },
+        if has_model {
+            "MEASUREMENTS - EXPERIMENTAL"
+        } else {
+            "AUTOMATED MEASUREMENTS - EXPERIMENTAL"
+        },
         rgb(0.706, 0.137, 0.094),
     );
     add_pdf_text(
         &layer,
         &regular_font,
-        258.0,
+        measurement_right_x - 10.0,
         9.0,
-        6.5,
-        &format!(
-            "technical quality: {}",
-            quality_label(report.measurements.quality)
-        ),
+        5.5,
+        &format!("Q: {}", quality_label(report.measurements.quality)),
         rgb(0.067, 0.094, 0.153),
     );
     let rows = measurement_rows(&report.measurements);
+    let measurement_second_column = if has_model {
+        measurement_x + 37.0
+    } else {
+        measurement_x + 57.0
+    };
     for (index, row) in rows[..3].iter().enumerate() {
         add_pdf_text(
             &layer,
             &mono_font,
-            177.0,
+            measurement_text_x,
             15.0 + index as f64 * 6.0,
-            8.0,
+            if has_model { 6.0 } else { 8.0 },
             row,
             rgb(0.067, 0.094, 0.153),
         );
@@ -640,12 +737,34 @@ fn render_pdf(report: &ReportData, source_label: &str) -> Result<Vec<u8>> {
         add_pdf_text(
             &layer,
             &mono_font,
-            231.0,
+            measurement_second_column,
             15.0 + index as f64 * 6.0,
-            8.0,
+            if has_model { 6.0 } else { 8.0 },
             row,
             rgb(0.067, 0.094, 0.153),
         );
+    }
+    if let Some(assessment) = &report.model_assessment {
+        add_pdf_text(
+            &layer,
+            &bold_font,
+            217.0,
+            9.0,
+            6.5,
+            "ML RHYTHM SIMILARITY - RESEARCH",
+            rgb(0.706, 0.137, 0.094),
+        );
+        for (index, row) in model_rows(assessment).iter().enumerate() {
+            add_pdf_text(
+                &layer,
+                &mono_font,
+                217.0,
+                14.0 + index as f64 * 5.0,
+                6.0,
+                row,
+                rgb(0.067, 0.094, 0.153),
+            );
+        }
     }
     add_pdf_text(
         &layer,
@@ -653,7 +772,7 @@ fn render_pdf(report: &ReportData, source_label: &str) -> Result<Vec<u8>> {
         10.0,
         202.0,
         8.0,
-        "Six limb leads only - V1 through V6 were not recorded. Automated measurements are experimental; not for diagnosis or treatment.",
+        "Six limb leads only - V1 through V6 absent. Measurements and ML similarity are experimental; not for diagnosis or treatment.",
         rgb(0.067, 0.094, 0.153),
     );
 
@@ -743,6 +862,44 @@ fn measurement_rows(measurements: &EcgMeasurements) -> [String; 6] {
             optional_i16(measurements.t_axis_deg)
         ),
     ]
+}
+
+fn model_rows(assessment: &ModelAssessment) -> [String; 4] {
+    let result = match &assessment.decision {
+        ModelDecision::Classified { class, confidence } => {
+            format!("RESULT {} {:.0}%", class.label(), confidence * 100.0)
+        }
+        ModelDecision::Abstained { reason } if reason.contains("quality") => {
+            "RESULT ABSTAIN: SIGNAL QUALITY".to_owned()
+        }
+        ModelDecision::Abstained { reason } if reason.contains("margin") => {
+            "RESULT ABSTAIN: CLASS MARGIN".to_owned()
+        }
+        ModelDecision::Abstained { .. } => "RESULT ABSTAIN: LOW CONFIDENCE".to_owned(),
+    };
+    [
+        format!("MODEL {}", truncate_text(&assessment.model_id, 27)),
+        truncate_text(&result, 39),
+        format!(
+            "P SIN {:>3.0}% AF {:>3.0}% OTH {:>3.0}%",
+            assessment.probabilities[0] * 100.0,
+            assessment.probabilities[1] * 100.0,
+            assessment.probabilities[2] * 100.0,
+        ),
+        "KARDIA DOMAIN: UNVALIDATED".to_owned(),
+    ]
+}
+
+fn truncate_text(value: &str, maximum_chars: usize) -> String {
+    if value.chars().count() <= maximum_chars {
+        return value.to_owned();
+    }
+    let mut truncated: String = value
+        .chars()
+        .take(maximum_chars.saturating_sub(3))
+        .collect();
+    truncated.push_str("...");
+    truncated
 }
 
 fn optional_u16(value: Option<u16>) -> String {
@@ -836,13 +993,43 @@ mod tests {
             mv_per_count: 10.0 / 65_536.0,
             inverted: false,
             measurements: EcgMeasurements::default(),
+            model_assessment: None,
         };
         let svg = render_svg(&report, "capture.csv");
         assert!(svg.contains(r#"width="297mm" height="210mm""#));
         assert!(svg.contains("Six-lead limb ECG"));
-        assert!(svg.contains("V1 through V6 were not recorded"));
+        assert!(svg.contains("V1 through V6 absent"));
         assert!(svg.contains(PROVISIONAL_SCALE_NOTE));
         assert!(svg.contains("AUTOMATED MEASUREMENTS - EXPERIMENTAL"));
+    }
+
+    #[test]
+    fn report_svg_labels_model_output_as_research_only_and_unvalidated() {
+        let report = ReportData {
+            leads_mv: std::array::from_fn(|_| vec![0.0; 3_000]),
+            start_seconds: 0.0,
+            duration_seconds: 10.0,
+            packet_count: 334,
+            capture_samples: 3_000,
+            speed_mm_s: 25.0,
+            gain_mm_mv: 10.0,
+            mv_per_count: 10.0 / 65_536.0,
+            inverted: false,
+            measurements: EcgMeasurements::default(),
+            model_assessment: Some(ModelAssessment {
+                model_id: "test-model".to_owned(),
+                probabilities: [0.95, 0.02, 0.03],
+                decision: ModelDecision::Classified {
+                    class: ecg_model::ResearchClass::SinusRhythmLike,
+                    confidence: 0.95,
+                },
+            }),
+        };
+        let svg = render_svg(&report, "capture.csv");
+        assert!(svg.contains("ML RHYTHM SIMILARITY - RESEARCH"));
+        assert!(svg.contains("sinus-rhythm-like"));
+        assert!(svg.contains("KARDIA DOMAIN: UNVALIDATED"));
+        assert!(svg.contains("not for diagnosis or treatment"));
     }
 
     #[test]

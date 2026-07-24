@@ -1,0 +1,16 @@
+[project]
+name = "kardia-ml"
+version = "0.1.0"
+description = "Research-only six-lead ECG classifier training and evaluation pipeline."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=2.1,<3",
+    "onnx>=1.17,<2",
+    "onnxruntime>=1.20,<2",
+    "scikit-learn>=1.6,<2",
+    "torch>=2.6,<3",
+    "wfdb>=4.2,<5",
+]
+
+[tool.uv]
+package = false

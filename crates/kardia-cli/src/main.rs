@@ -1,4 +1,5 @@
 mod ecg_analysis;
+mod ecg_model;
 mod ecg_report;
 mod live_view;
 mod raw_commands;
@@ -115,6 +116,9 @@ enum Command {
         /// Replace the input path printed in the report header.
         #[arg(long)]
         source_label: Option<String>,
+        /// JSON manifest for an optional research-only ONNX classifier.
+        #[arg(long)]
+        model: Option<PathBuf>,
         /// Seconds into the recording at which the report begins.
         #[arg(long, default_value_t = 0.0)]
         start_seconds: f64,
@@ -202,6 +206,7 @@ async fn main() -> Result<()> {
             input,
             out,
             source_label,
+            model,
             start_seconds,
             seconds,
             speed_mm_s,
@@ -220,6 +225,7 @@ async fn main() -> Result<()> {
                 invert,
             },
             source_label.as_deref(),
+            model.as_deref(),
         ),
     }
 }
@@ -229,7 +235,7 @@ fn doctor() -> Result<()> {
     println!("core: ECG sample and six-lead derivation types available");
     println!("ble: live scan, GATT inspection, journaled raw capture, and M2 decoding available");
     println!(
-        "cli: live M2 view, raw inspection, six-lead CSV, and vector ECG reports with experimental measurements available"
+        "cli: live M2 view, raw inspection, six-lead CSV, and vector ECG reports with optional research-only ONNX rhythm similarity available"
     );
     println!(
         "limits: report scale is provisional; signal polarity, physical calibration, and exposed M4 600 Hz remain unverified"

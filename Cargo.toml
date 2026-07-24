@@ -16,10 +16,13 @@ rust-version = "1.82"
 [workspace.dependencies]
 anyhow = "1"
 btleplug = "0.11"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "=4.5.51", features = ["derive"] }
 futures = "0.3"
 printpdf = { version = "0.7.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-uuid = "1"
+tract-onnx = "=0.21.17"
+uuid = "=1.18.1"

@@ -357,6 +357,32 @@ device-native P/QRS/T axes 61/62/48 degrees. These values are useful regression
 evidence only; they have not been compared with manual annotations or a
 validated analysis system.
 
+### 2026-07-23: Optional ML Rhythm-Similarity Model
+
+The report path can optionally load a versioned JSON manifest plus ONNX model.
+The first bundle, `limb6-rhythm-v0.1.0`, is a three-way research classifier:
+`sinus-rhythm-like`, `af-like`, and `other/noisy`.
+
+The model is not part of packet decoding and never changes the rendered
+waveform. Its analysis copy is reduced from 300 to 100 Hz, median-centered,
+normalized by a shared I/II amplitude statistic, and clipped to the training
+range. The runtime validates the model SHA-256, manifest schema, lead/label
+order, tensor shape, research-only declaration, and decision thresholds before
+inference.
+
+The model must abstain unless deterministic technical quality is `GOOD`, the
+winning class passes its threshold, and the top-two probability margin is at
+least 0.20. Its report panel always identifies the result as research-only and
+the Kardia domain as unvalidated.
+
+End-to-end device smoke testing was performed locally with a private, untracked
+capture. Its waveform, measurements, probability output, and generated reports
+are intentionally not included in the repository. The smoke test confirmed
+preprocessing, local ONNX execution, conservative abstention, and PDF/SVG
+integration; it is not evidence of Kardia-domain model accuracy.
+Training/evaluation provenance and held-out PTB-XL metrics are recorded in the
+[`limb6-rhythm-v0.1.0` model card](../../models/limb6-rhythm-v0.1.0.md).
+
 ## Remaining Assumptions
 
 - Raw captures and CSV exports should stay unscaled until calibration is
@@ -365,6 +391,8 @@ validated analysis system.
 - BLE packet timing may matter; preserve receive timestamps even if packet payloads contain sequence numbers.
 - Automated fiducial points and measurement confidence thresholds remain
   experimental until validated on annotated public ECG databases.
+- ML rhythm-similarity thresholds remain experimental and Kardia-domain
+  performance is unvalidated.
 
 ## Open Questions
 
@@ -377,3 +405,5 @@ validated analysis system.
   `10 mV / 65536` stored-count scale and device-native polarity?
 - How do automated interval and axis errors compare against an annotated
   reference set after resampling representative records to 300 Hz?
+- How does the selective classifier perform on an independently reviewed,
+  patient-level Kardia test set acquired with this electrode geometry?

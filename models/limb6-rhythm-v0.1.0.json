@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "model_id": "limb6-rhythm-v0.1.0",
+  "model_file": "limb6-rhythm-v0.1.0.onnx",
+  "sha256": "3d97de838a6c295768b07bfe7d1872bcc68c2472ca6ba3f773d45656c1f5743e",
+  "research_only": true,
+  "input": {
+    "sample_rate_hz": 100,
+    "samples": 1000,
+    "leads": [
+      "I",
+      "II",
+      "III",
+      "aVR",
+      "aVL",
+      "aVF"
+    ],
+    "normalization": "per-lead median; global I/II p95 scale >=0.05 mV; clip +/-6"
+  },
+  "labels": [
+    "sinus-rhythm-like",
+    "af-like",
+    "other/noisy"
+  ],
+  "decision": {
+    "class_thresholds": {
+      "sinus-rhythm-like": 0.99,
+      "af-like": 0.99,
+      "other/noisy": 0.8683838383838384
+    },
+    "minimum_margin": 0.2,
+    "requires_measurement_quality": "GOOD",
+    "low_confidence_action": "abstain"
+  },
+  "training": {
+    "dataset": "PTB-XL 1.0.3 records100",
+    "prepared_dataset": {
+      "records": 11240,
+      "sample_rate_hz": 100,
+      "samples": 1000,
+      "leads": [
+        "I",
+        "II",
+        "III",
+        "aVR",
+        "aVL",
+        "aVF"
+      ],
+      "labels": {
+        "sinus-rhythm-like": 5544,
+        "af-like": 1083,
+        "other/noisy": 4613
+      },
+      "split": "PTB-XL strat_fold 1-8 train, 9 validation, 10 test",
+      "normalization": "per-lead median; global I/II p95 scale >=0.05 mV; clip +/-6",
+      "selection": {
+        "dataset": "PTB-XL 1.0.3 records100",
+        "seed": 20260723,
+        "policy": "all fold 9/10 records; all AF-like fold 1-8 records; fixed sample of up to 3000 records from each common training class",
+        "records": 11240,
+        "labels": {
+          "sinus-rhythm-like": 5544,
+          "af-like": 1083,
+          "other/noisy": 4613
+        }
+      }
+    },
+    "label_policy": {
+      "sinus-rhythm-like": "SR present, AFIB absent, no listed signal contamination",
+      "af-like": "AFIB present, SR absent, no listed signal contamination",
+      "other/noisy": "all other rhythms or listed signal contamination"
+    },
+    "split": "strat_fold 1-8 train, 9 validation, 10 held-out test",
+    "temperature": 1.291029453277588,
+    "seed": 20260723
+  },
+  "held_out_test": {
+    "records": 2198,
+    "balanced_accuracy": 0.699544528804808,
+    "macro_auroc_ovr": 0.8315867869545782,
+    "confusion_matrix": [
+      [
+        1056,
+        10,
+        224
+      ],
+      [
+        4,
+        84,
+        21
+      ],
+      [
+        343,
+        49,
+        407
+      ]
+    ],
+    "per_class": {
+      "sinus-rhythm-like": {
+        "precision": 0.7526728439059159,
+        "recall": 0.8186046511627907,
+        "f1": 0.7842554771630152,
+        "support": 1290
+      },
+      "af-like": {
+        "precision": 0.5874125874125874,
+        "recall": 0.7706422018348624,
+        "f1": 0.6666666666666666,
+        "support": 109
+      },
+      "other/noisy": {
+        "precision": 0.6242331288343558,
+        "recall": 0.509386733416771,
+        "f1": 0.5609924190213645,
+        "support": 799
+      }
+    },
+    "abstention": {
+      "coverage": 0.05823475887170155,
+      "accepted_accuracy": 0.921875,
+      "accepted_records": 128
+    }
+  },
+  "onnx_maximum_absolute_error": 1.4901161193847656e-07,
+  "limitations": [
+    "Not a medical device and not for diagnosis or treatment.",
+    "Trained on PTB-XL, not on Kardia recordings.",
+    "Only two leads are independent; III/aVR/aVL/aVF are derived from I/II.",
+    "No chest leads are present; unsupported conditions must not be inferred.",
+    "A classified output means model similarity, not clinical confirmation."
+  ]
+}

@@ -8,4 +8,11 @@
 /output/
 # Rendered PDF inspection images are disposable build artifacts.
 /tmp/
+# Public training data and prepared tensors are reproducible but too large for Git.
+/ml/data/
+/ml/.venv/
+/ml/.pytest_cache/
+/ml/**/__pycache__/
+# Training checkpoints are local; the reviewed ONNX export and model card may be tracked.
+/ml/checkpoints/
 __pycache__/

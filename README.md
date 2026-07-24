@@ -15,7 +15,9 @@ renders printable six-lead ECG reports as vector PDF or SVG.
 > diagnosis or treatment. Report amplitude uses a specification-derived,
 > provisional scale; signal polarity and physical-unit calibration have not
 > been independently validated. Automated intervals and axes are experimental
-> and have not been validated against an annotated clinical ECG database.
+> and have not been validated against an annotated clinical ECG database. The
+> optional ML rhythm-similarity model is trained on public non-Kardia data and
+> has not been clinically or device-domain validated.
 
 ## Contents
 
@@ -24,6 +26,7 @@ renders printable six-lead ECG reports as vector PDF or SVG.
 - [Installation](#installation)
 - [Quickstart](#quickstart)
 - [Six-lead ECG reports](#six-lead-ecg-reports)
+- [Optional ML rhythm similarity](#optional-ml-rhythm-similarity)
 - [Pairing and troubleshooting](#pairing-and-troubleshooting)
 - [Capture format](#capture-format)
 - [M2 and M4 findings](#m2-and-m4-findings)
@@ -48,6 +51,7 @@ Tested with a `Kardia6L F241` running firmware 3.0.1 on macOS 15.7.4:
 | Raw capture inspection and M2 CSV export | Working |
 | A4 six-lead ECG report | Vector PDF and SVG at standard 25 mm/s and 10 mm/mV |
 | Automated measurements | Experimental HR, PR, QRS, QT/QTcB/QTcF, and device-native P/QRS/T axes |
+| Optional ML report panel | Three-way rhythm similarity with conservative confidence/margin abstention |
 | M4 dual-lead 600 Hz request | Command sent, but observed transport remains M2-compatible at 300 Hz |
 | Signal polarity | Device-native direction remains unverified; report supports manual inversion |
 | Volts-per-count | Provisional inference: `10 mV / 65536` per stored count; simulator validation pending |
@@ -73,6 +77,9 @@ decoder boundaries are documented in
   A4 ECG grid as PDF or SVG.
 - Builds an aligned median complex and prints confidence-gated experimental
   rate, interval, QT-correction, and frontal-axis measurements.
+- Optionally runs a local, versioned ONNX waveform model and prints
+  sinus-rhythm-like, AF-like, or other/noisy similarity only when conservative
+  quality, confidence, and class-separation gates pass.
 - Keeps captures out of Git by default because they may contain health data and
   device identifiers.
 
@@ -214,6 +221,47 @@ sample left-aligned in a signed 16-bit field, but it is not yet an electrical
 calibration. Every report carries a visible provisional-amplitude warning
 until an isolated ECG simulator or equivalent traceable reference confirms the
 scale and polarity.
+
+## Optional ML Rhythm Similarity
+
+`render-ecg` can optionally load a reviewed model manifest. Without `--model`,
+no ML runtime or model is used:
+
+```sh
+cargo run -p kardia-cli -- render-ecg \
+  captures/kardia-m2.csv \
+  --model models/limb6-rhythm-v0.1.0.json \
+  --out output/pdf/kardia-six-lead-with-ml.pdf
+```
+
+The model receives a separate analysis copy of the same six displayed limb
+leads. The 300 Hz signal is reduced to the model's declared 100 Hz input,
+median-centered, normalized using the two independent I/II channels, and
+clipped to the manifest's training range. This processing does not alter the
+waveform drawn on the report.
+
+Before inference, the CLI validates the model SHA-256, manifest schema, label
+order, lead order, tensor shape, research-only declaration, and threshold
+ranges. It abstains when deterministic technical quality is not `GOOD`, the
+top probability is below its class-specific threshold, or the top-two class
+margin is too small. The report always labels the result as research-only and
+the Kardia domain as unvalidated.
+
+The three outputs are similarity categories, not diagnoses:
+
+- `sinus-rhythm-like`: resembles public training records explicitly labeled
+  sinus rhythm;
+- `af-like`: resembles records explicitly labeled atrial fibrillation; and
+- `other/noisy`: alternative rhythms, listed signal contamination, or other
+  unsupported patterns.
+
+“Sinus-rhythm-like” does not mean “normal ECG,” and an abstention is an
+intentional output rather than an error. V1-V6-dependent findings must not be
+inferred from this device. The complete reproducible data-labeling, training,
+calibration, evaluation, and ONNX-export workflow is in
+[ml/README.md](ml/README.md). Architecture, thresholds, held-out results, and
+device-domain limitations are recorded in the
+[model card](models/limb6-rhythm-v0.1.0.md).
 
 ## Pairing and Troubleshooting
 
