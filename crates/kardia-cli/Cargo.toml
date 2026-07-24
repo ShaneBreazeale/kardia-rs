@@ -17,4 +17,5 @@ anyhow.workspace = true
 clap.workspace = true
 kardia-ble = { path = "../kardia-ble" }
 kardia-core = { path = "../kardia-core" }
+printpdf.workspace = true
 tokio.workspace = true

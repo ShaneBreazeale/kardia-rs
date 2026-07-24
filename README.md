@@ -6,13 +6,16 @@ KardiaMobile 6L.
 
 The verified path connects to a bonded Kardia 6L, records every raw
 notification, displays a live six-limb-lead view, inspects the observed packet
-transport, and exports confirmed M2 recordings to analysis-friendly CSV.
+transport, exports confirmed M2 recordings to analysis-friendly CSV, and
+renders printable six-lead ECG reports as vector PDF or SVG.
 
 > [!WARNING]
 > This is independent research software, not a medical device. It is not
 > affiliated with or endorsed by AliveCor, and its output must not be used for
-> diagnosis or treatment. Signal polarity and physical-unit calibration remain
-> unverified.
+> diagnosis or treatment. Report amplitude uses a specification-derived,
+> provisional scale; signal polarity and physical-unit calibration have not
+> been independently validated. Automated intervals and axes are experimental
+> and have not been validated against an annotated clinical ECG database.
 
 ## Contents
 
@@ -20,6 +23,7 @@ transport, and exports confirmed M2 recordings to analysis-friendly CSV.
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
+- [Six-lead ECG reports](#six-lead-ecg-reports)
 - [Pairing and troubleshooting](#pairing-and-troubleshooting)
 - [Capture format](#capture-format)
 - [M2 and M4 findings](#m2-and-m4-findings)
@@ -42,8 +46,11 @@ Tested with a `Kardia6L F241` running firmware 3.0.1 on macOS 15.7.4:
 | Channel identity | Channel 1 = lead I; channel 2 = lead II |
 | Live I/II/III/aVR/aVL/aVF display | Working in uncalibrated raw counts |
 | Raw capture inspection and M2 CSV export | Working |
+| A4 six-lead ECG report | Vector PDF and SVG at standard 25 mm/s and 10 mm/mV |
+| Automated measurements | Experimental HR, PR, QRS, QT/QTcB/QTcF, and device-native P/QRS/T axes |
 | M4 dual-lead 600 Hz request | Command sent, but observed transport remains M2-compatible at 300 Hz |
-| Signal polarity and volts-per-count | Unknown |
+| Signal polarity | Device-native direction remains unverified; report supports manual inversion |
+| Volts-per-count | Provisional inference: `10 mV / 65536` per stored count; simulator validation pending |
 | Linux and Windows BLE capture | Architecturally supported, not yet device-tested |
 
 The detailed evidence log is in
@@ -62,6 +69,10 @@ decoder boundaries are documented in
 - Distinguishes requested/nominal mode metadata from observed packet behavior.
 - Inspects packet sizes, cadence, command indications, and M2 compatibility.
 - Exports M2 samples with both raw channels and all six derived limb leads.
+- Renders simultaneous I/II/III/aVR/aVL/aVF strips on a physically dimensioned
+  A4 ECG grid as PDF or SVG.
+- Builds an aligned median complex and prints confidence-gated experimental
+  rate, interval, QT-correction, and frontal-axis measurements.
 - Keeps captures out of Git by default because they may contain health data and
   device identifiers.
 
@@ -126,6 +137,83 @@ cargo run -p kardia-cli -- export-six-lead-m2 \
 The exported columns include the raw channel pair, leads I and II, derived
 III/aVR/aVL/aVF, an exact 300 Hz sample clock, and the original packet receive
 timestamp. Values remain device-native counts, not millivolts.
+
+Render the first 10 seconds as a printable report:
+
+```sh
+cargo run -p kardia-cli -- render-ecg \
+  captures/kardia-m2.csv \
+  --out output/pdf/kardia-six-lead.pdf
+```
+
+## Six-lead ECG Reports
+
+`render-ecg` accepts only confirmed M2 captures and draws six simultaneous limb
+leads: measured I and II plus derived III, aVR, aVL, and aVF. It does not
+invent V1-V6 and labels their absence on the page.
+
+### Sample Report
+
+![An anonymized six-lead limb ECG rendered on a standard ECG grid](docs/assets/kardia-six-lead-sample.svg)
+
+This anonymized 9.96-second sample was rendered directly from a device capture.
+[Open the full-size vector report](docs/assets/kardia-six-lead-sample.svg).
+The waveform and automated measurements are research output, not a medical
+interpretation.
+
+The defaults produce a landscape A4 page with:
+
+- 25 mm/s paper speed and 10 mm/mV gain;
+- a 1 mm minor and 5 mm major ECG grid;
+- a 1 mV by 200 ms calibration pulse for every strip;
+- an exact 300 Hz horizontal sample clock;
+- per-lead median subtraction for vertical placement; and
+- no smoothing, notch, high-pass, or low-pass filter applied to the displayed
+  waveform.
+
+The report also includes an **experimental automated measurements** panel:
+
+- ventricular rate from the first-to-last detected QRS span;
+- PR interval, global QRS duration, and global QT interval from an aligned
+  representative median complex;
+- Bazett (`QTcB`) and Fridericia (`QTcF`) rate correction using average RR; and
+- frontal P/QRS/T axes calculated from the two independent I/II channels.
+
+Beat detection uses a separate analysis copy with baseline suppression,
+smoothing, multi-channel slope energy, and a refractory period. Qualifying
+beats are aligned and combined sample-by-sample with a median. Wave boundaries
+are then estimated from simultaneous channel slopes and return-to-baseline
+tests. These analysis operations never alter the waveform drawn on the report.
+
+Values that fail technical confidence checks are printed as `--`. “Technical
+quality” describes detector confidence only, not whether an ECG is medically
+normal. The P/QRS/T axes carry an asterisk because they retain the currently
+unverified device-native polarity. The measurements must not be used for
+diagnosis and still require validation against annotated reference databases.
+
+The default report interval is 10 seconds. Select a later section of a longer
+capture with `--start-seconds`:
+
+```sh
+cargo run -p kardia-cli -- render-ecg \
+  captures/kardia-m2.csv \
+  --start-seconds 10 \
+  --seconds 10 \
+  --out output/pdf/kardia-six-lead-page-2.pdf
+```
+
+Use an `.svg` output extension for editable vector output. `--speed-mm-s`,
+`--gain-mm-mv`, and `--mv-per-count` are available for controlled experiments;
+`--invert` reverses device-native polarity.
+
+The default voltage conversion is the explicit hypothesis
+`10 mV / 65536 = 0.000152587890625 mV` per stored signed count. AliveCor
+specifies a 10 mV peak-to-peak input range and 14-bit resolution, while every
+observed value has its low two bits clear. This is consistent with a 14-bit
+sample left-aligned in a signed 16-bit field, but it is not yet an electrical
+calibration. Every report carries a visible provisional-amplitude warning
+until an isolated ECG simulator or equivalent traceable reference confirms the
+scale and polarity.
 
 ## Pairing and Troubleshooting
 
@@ -258,6 +346,16 @@ Please run the complete development command set before opening a pull request.
 ECG captures are health-related data and may also contain device identifiers.
 The repository ignores `captures/` by default. Do not publish a capture unless
 it has been intentionally reviewed, minimized, and anonymized.
+
+When sharing a generated report, replace its local input path with a neutral
+label:
+
+```sh
+cargo run -p kardia-cli -- render-ecg \
+  captures/kardia-m2.csv \
+  --source-label "Anonymized research capture" \
+  --out report.svg
+```
 
 ## License
 

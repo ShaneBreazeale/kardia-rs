@@ -1,3 +1,5 @@
+mod ecg_analysis;
+mod ecg_report;
 mod live_view;
 mod raw_commands;
 
@@ -103,6 +105,35 @@ enum Command {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Render a confirmed M2 capture as a standard-grid six-lead ECG report.
+    RenderEcg {
+        /// Raw capture produced by `capture-raw`.
+        input: PathBuf,
+        /// Destination `.pdf` or `.svg` path.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Replace the input path printed in the report header.
+        #[arg(long)]
+        source_label: Option<String>,
+        /// Seconds into the recording at which the report begins.
+        #[arg(long, default_value_t = 0.0)]
+        start_seconds: f64,
+        /// Seconds to draw (maximum 10 at the standard paper speed).
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+        /// Horizontal paper speed in millimeters per second.
+        #[arg(long, default_value_t = 25.0)]
+        speed_mm_s: f64,
+        /// Vertical gain in millimeters per millivolt.
+        #[arg(long, default_value_t = 10.0)]
+        gain_mm_mv: f64,
+        /// Provisional millivolts represented by one stored raw count.
+        #[arg(long, default_value_t = 0.000_152_587_890_625)]
+        mv_per_count: f64,
+        /// Reverse the device-native signal polarity.
+        #[arg(long)]
+        invert: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -167,6 +198,29 @@ async fn main() -> Result<()> {
         }
         Command::InspectRaw { input } => raw_commands::inspect_raw(&input),
         Command::ExportSixLeadM2 { input, out } => raw_commands::export_six_lead_m2(&input, &out),
+        Command::RenderEcg {
+            input,
+            out,
+            source_label,
+            start_seconds,
+            seconds,
+            speed_mm_s,
+            gain_mm_mv,
+            mv_per_count,
+            invert,
+        } => ecg_report::render(
+            &input,
+            &out,
+            ecg_report::ReportOptions {
+                start_seconds,
+                duration_seconds: seconds,
+                speed_mm_s,
+                gain_mm_mv,
+                mv_per_count,
+                invert,
+            },
+            source_label.as_deref(),
+        ),
     }
 }
 
@@ -174,8 +228,12 @@ fn doctor() -> Result<()> {
     println!("kardia-rs workspace");
     println!("core: ECG sample and six-lead derivation types available");
     println!("ble: live scan, GATT inspection, journaled raw capture, and M2 decoding available");
-    println!("cli: live M2 view, raw transport inspection, and six-lead CSV export available");
-    println!("limits: signal polarity, physical calibration, and exposed M4 600 Hz remain unknown");
+    println!(
+        "cli: live M2 view, raw inspection, six-lead CSV, and vector ECG reports with experimental measurements available"
+    );
+    println!(
+        "limits: report scale is provisional; signal polarity, physical calibration, and exposed M4 600 Hz remain unverified"
+    );
     Ok(())
 }
 

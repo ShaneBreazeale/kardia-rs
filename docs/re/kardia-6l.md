@@ -300,10 +300,71 @@ distribution, packet cadence, command indication bytes, M2 packet
 compatibility, and the sample rate implied by that observed transport. The M2
 exporter also refuses captures whose header requested another mode.
 
+### 2026-07-23: Standard-Grid Six-Lead Report
+
+The CLI now renders confirmed M2 captures as simultaneous I, II, III, aVR, aVL,
+and aVF strips on a dimensioned A4 landscape ECG grid. PDF and SVG use the same
+geometry: 25 mm/s, 10 mm/mV, 1 mm minor grid lines, 5 mm major grid lines, and
+a 1 mV by 200 ms calibration pulse. The renderer subtracts each selected
+lead's median only to position its baseline and applies no waveform filter.
+M4-tagged captures are rejected.
+
+The initial voltage scale is an explicit, provisional inference. AliveCor's
+published 6L specifications describe a 10 mV peak-to-peak input range, 14-bit
+resolution, and 300 samples/s. In every inspected M2 and M4-compatible capture,
+all signed 16-bit values are divisible by four. A 14-bit sample left-aligned in
+the stored signed 16-bit field would therefore imply:
+
+```text
+mV = raw_i16 * (10 / 65536)
+1 stored count = 0.000152587890625 mV
+1 effective four-count ADC step = 0.0006103515625 mV
+```
+
+This inference produces plausible report amplitudes but is not electrical
+calibration evidence. Reports visibly label amplitude and polarity as
+provisional. Validation requires a known isolated ECG simulator signal or an
+equivalent traceable reference; do not connect a mains-referenced bench
+generator while electrodes are attached to a person.
+
+### 2026-07-23: Experimental Automated Measurements
+
+The report now includes a generic automated-measurements panel. It contains no
+diagnostic interpretation and labels every result experimental. The analysis
+pipeline is separate from the displayed waveform:
+
+1. suppress baseline and smooth copies of the two independent I/II channels;
+2. detect QRS candidates from combined derivative energy with a 250 ms
+   refractory period;
+3. refine and align QRS locations;
+4. form representative I/II complexes from the sample-by-sample median of
+   qualifying beats;
+5. estimate global P onset, QRS onset/offset, and T offset from simultaneous
+   vector magnitude and slope; and
+6. withhold fields whose signal-to-noise, rhythm consistency, interval, or
+   boundary checks fail.
+
+Ventricular rate uses the number of first-to-last QRS intervals divided by
+their elapsed time. QTcB is `QT / sqrt(RR)` and QTcF is `QT / cbrt(RR)`, with
+QT in milliseconds and average RR in seconds. Frontal axes integrate I and II
+over each detected wave and recover the orthogonal component with
+`y = (2*II - I) / sqrt(3)` before `atan2(y, I)`.
+
+On the 9.960-second confirmed-label capture, the first implementation found 12
+QRS complexes and used 10 complete beats for the median complex. It reported
+69 bpm, PR 143 ms, QRS 100 ms, QT/QTcB 377/405 ms, QTcF 395 ms, and
+device-native P/QRS/T axes 61/62/48 degrees. These values are useful regression
+evidence only; they have not been compared with manual annotations or a
+validated analysis system.
+
 ## Remaining Assumptions
 
-- Raw units should stay unscaled until calibration is confirmed.
+- Raw captures and CSV exports should stay unscaled until calibration is
+  confirmed. Reports may use the specification-derived provisional scale only
+  when it is visibly disclosed.
 - BLE packet timing may matter; preserve receive timestamps even if packet payloads contain sequence numbers.
+- Automated fiducial points and measurement confidence thresholds remain
+  experimental until validated on annotated public ECG databases.
 
 ## Open Questions
 
@@ -312,3 +373,7 @@ exporter also refuses captures whose header requested another mode.
 - Does M4 fall back to M2, or does it sample internally at 600 Hz and export a
   decimated 300 Hz stream?
 - What do `ac060005` and `ac060006` contain?
+- Does an isolated 1 mV simulator input confirm the inferred
+  `10 mV / 65536` stored-count scale and device-native polarity?
+- How do automated interval and axis errors compare against an annotated
+  reference set after resampling representative records to 300 Hz?
