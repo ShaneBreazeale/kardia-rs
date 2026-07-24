@@ -95,7 +95,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_apk_observed_unlock_command() {
+    fn builds_expected_compatibility_command() {
         assert_eq!(unlock_token("Kardia6L"), "Kd8a179a137775575");
         assert_eq!(
             command_for_mode("Kardia6L", EcgMode::DualLead300Hz),

@@ -1,4 +1,4 @@
-# Kardia 6L Reverse-Engineering Notes
+# Kardia 6L Protocol Evidence
 
 ## Target
 
@@ -13,53 +13,43 @@ Add one section per observation. Include:
 - date and host platform,
 - tool or code revision used,
 - device firmware/app state if known,
-- raw advertisement data,
+- sanitized advertisement capabilities,
 - GATT service/characteristic dump,
 - raw notification bytes with timestamps,
 - interpretation and confidence.
 
-### 2026-05-31: Downloaded APK Check
+Before publishing, remove local paths, peripheral IDs, serial numbers,
+device-name suffixes, device-specific command values, and personal ECG
+payloads. See [protocol-provenance.md](protocol-provenance.md) for the complete
+public-evidence policy.
 
-Artifact: `/Users/shane/Downloads/alivecor-inc-kardia.apk`
+### 2026-05-31: Initial Interoperability Scope
 
-Finding: not useful for Kardia BLE reverse engineering. It decodes as Aptoide (`cm.aptoide.pt`), has no BLE permissions, and contains no AliveCor/Kardia references in manifest/resources. See `docs/re/apk-inspection.md`.
+The initial compatibility hypotheses below were validated against a normally
+bonded device. Each later section distinguishes observed behavior from
+inference and standard Bluetooth or limb-lead identities.
 
-### 2026-05-31: AliveECG APK 5.29.1 BLE Constants
-
-Artifact: `/Users/shane/Downloads/com.alivecor.aliveecg_5.29.1-41a0fe800-591_minAPI23(arm64-v8a,armeabi-v7a,x86,x86_64)(nodpi)_apkmirror.com.apk`
-
-Finding: useful Kardia 6L BLE metadata was recovered from the AliveCor app. See `docs/re/apk-inspection.md` for the full notes.
-
-High-confidence constants:
+Initial compatibility hypotheses:
 
 - six-lead service: `AC060001-328C-A28F-9846-5A8AA212661B`
 - command characteristic: `AC060002-328C-A28F-9846-5A8AA212661B`
 - ECG notification characteristic: `AC060003-328C-A28F-9846-5A8AA212661B`
 - command CCCD: `00002902-0000-1000-8000-00805F9B34FB`
+- nominal modes M1 through M4;
+- compatibility command value generated locally after normal OS bonding.
 
-Observed stream startup sequence:
+The independently reproduced stream startup sequence is:
 
 1. Scan without Android filters.
 2. Keep advertisements that contain the Kardia 6L six-lead service UUID.
 3. Connect with LE transport and bond if needed.
 4. Discover services and require ECG, command, battery, serial, firmware, and hardware characteristics.
 5. Enable indications on the command characteristic.
-6. Write the unlock/mode command.
+6. Write the locally generated compatibility command.
 7. Enable notifications on the ECG characteristic.
 8. Persist raw ECG notifications with receive timestamps.
 
-Command format:
-
-- mode strings: `M1` single-lead 300 Hz, `M2` dual-lead 300 Hz, `M3` single-lead 600 Hz, `M4` dual-lead 600 Hz
-- unlock token: `K` plus the first 16 lowercase hex chars of `sha256("Triangle" + bluetooth device name)`
-- command payload example for device name `Kardia6L`, dual-lead 300 Hz: `M2 Kd8a179a137775575`
-
-Java callback metadata:
-
-- ECG notifications are forwarded as two leads at 300 Hz in the app path inspected.
-- Packet decoding appears to happen in `libuniversal_monitor_jni.so`, not Java.
-
-### 2026-05-31: Live Kardia6L F241 GATT Dump
+### 2026-05-31: Live GATT Dump
 
 Host: macOS via `btleplug`/CoreBluetooth
 
@@ -69,7 +59,8 @@ Command:
 cargo run -p kardia-cli -- gatt-dump --rescan 30
 ```
 
-Finding: the device advertised as `Kardia6L F241`, connected, and exposed the expected 6L service and command/ECG characteristics.
+Finding: a KardiaMobile 6L connected and exposed the expected 6L service and
+command/ECG characteristics.
 
 Services:
 
@@ -109,7 +100,7 @@ Result: connection, service discovery, and normal characteristic reads work.
 Read values:
 
 - model number `00002a24...`: `AC-019`
-- serial number `00002a25...`: `2025081219902`
+- serial number `00002a25...`: redacted
 - firmware revision `00002a26...`: `3.0.1`
 - hardware revision `00002a27...`: `19SC03.03`
 - manufacturer name `00002a29...`: `AliveCor`
@@ -120,7 +111,8 @@ Read values:
 Stream attempts:
 
 - Android-like sequence connected and discovered services, then timed out enabling command indications on `ac060002...`.
-- Fallback sequence skipped command indications and timed out writing unlock command `M2 K934de27399369534`.
+- Fallback sequence skipped command indications and timed out writing a
+  redacted M2 compatibility command.
 - Listen-only sequence skipped the unlock write and timed out enabling ECG notifications on `ac060003...`.
 
 Interpretation: basic BLE connect/discover/read is working. The current blocker is CoreBluetooth completion of CCCD writes and command writes. Next probes should focus on macOS pairing/security, CoreBluetooth CCCD behavior, and whether writes complete when initiated from a bonded Android session first.
@@ -132,13 +124,14 @@ Host: macOS via `bleak`/CoreBluetooth (reference stack, `scripts/bleak_probe.py`
 Purpose: isolate whether the CCCD-write/write hang is a `btleplug` bug or a device
 requirement, by replaying the same sequence on Apple's own CoreBluetooth via bleak.
 
-Result (device `Kardia6L F241`, awake):
+Result (KardiaMobile 6L device awake):
 
 - reads OK: model `AC-019`, `ac060005` = `0xfc08` (changed from earlier `0xf609`; likely live), `ac060006` = `0xc70b` (stable)
 - subscribe battery `00002a19` (unencrypted control): **OK**
 - subscribe ECG `ac060003` (notify-only): **HANG** (no CoreBluetooth callback in 15s)
 - enable command indications `ac060002`: **HANG**
-- write unlock `M2 K934de27399369534` to `ac060002`: **FAIL — `GATT Protocol Error 5: Insufficient Authentication`**
+- write the redacted M2 compatibility command to `ac060002`: **FAIL —
+  `GATT Protocol Error 5: Insufficient Authentication`**
 
 Conclusion (high confidence):
 
@@ -146,7 +139,11 @@ Conclusion (high confidence):
 - Every Kardia vendor characteristic (`ac06000x`) requires an **encrypted/bonded** link. The unencrypted battery characteristic subscribes fine; the vendor characteristics return ATT error 5 (insufficient authentication) on write and stall on CCCD writes while CoreBluetooth tries and fails to elevate security.
 - macOS CoreBluetooth only forms a bond when the peripheral issues a security request and a bond can complete. The stall means no bond is completing — most likely the device already holds a bond with the phone (BLE devices typically keep a single bond).
 
-No key can be lifted from the APK to bypass this. The AliveCor app calls bare `createBond()` and lets the OS run BLE pairing; there is no static PIN/passkey/OOB key in the dex, so the bond LTK is negotiated live and stored by the OS, not the app. The only APK-held secret is the `K...` unlock token, which is an application-layer command written *after* the link is encrypted. The app also ships bonding-retry flags (`bleCallCreateBondLimitRetry`, `bleCallCreateBondRetryTimeout`, a logged `createBond exception.`), evidence that bonding the Kardia is flaky even for the official app. See `apk-inspection.md` ("Bonding / pairing").
+Independent device tests confirmed the boundary: the operating system must
+establish a normal encrypted bond before vendor-characteristic access. This
+project does not use a static pairing key, bypass pairing, extract bond
+material, or impersonate an account. The compatibility command is sent only
+after bonding.
 
 Next action: clear the existing bond (close the AliveCor app, forget the device on the phone, pull the Kardia battery ~15s to reset stored pairing), wake the device, and rerun the probe while watching for the macOS pairing dialog. Retry if the first attempt hangs — bonding is unreliable by design. Once a bond exists it is system-wide, so the Rust/`btleplug` capture path should then complete the same writes.
 
@@ -184,9 +181,9 @@ cargo run -p kardia-cli -- capture-raw --rescan 60 --seconds 30 \
 
 Result:
 
-- Device: `Kardia6L F241`, firmware previously observed as 3.0.1.
+- Device: KardiaMobile 6L, firmware previously observed as 3.0.1.
 - Command indication subscription: success.
-- Unlock/mode write: `M2 K934de27399369534`, success.
+- Compatibility command write: redacted M2 value, success.
 - Command indication received: `0x01`.
 - ECG notification subscription: success.
 - Capture: 1,000 ECG packets / 36,000 bytes in 30 seconds.
@@ -239,33 +236,32 @@ Two complementary contact-removal captures were recorded with the device arrow
 pointing away from the torso, both top electrodes under the corresponding
 fingers, and the bottom electrode on the bare left knee.
 
-In `kardia-mapping-leg-off-2026-07-23.csv`, removing the bottom/left-leg
-electrode produced two repeatable channel-2 rail episodes near +/-25,100 raw
-counts. During the cleaner 17.233-18.697 second episode, channel 2 was beyond
-20,000 counts for 79.5% of samples while channel 1 never crossed that threshold.
-Both channels returned to normal after contact was restored.
+In the controlled leg-off capture, removing the bottom/left-leg electrode produced
+two repeatable channel-2 rail episodes near +/-25,100 raw counts. During the
+cleaner 17.233-18.697 second episode, channel 2 was beyond 20,000 counts for
+79.5% of samples while channel 1 never crossed that threshold. Both channels
+returned to normal after contact was restored.
 
-In `kardia-mapping-left-fingers-off-2026-07-23.csv`, device rocking initially
-caused additional bottom-contact artifacts. A clean 28.32-28.52 second interval
-then isolated the intended condition: channel 1 was beyond 20,000 counts for
-100% of samples while channel 2 never crossed the threshold. Both channels
-returned to normal after the left fingers were restored.
+In the controlled left-fingers-off capture, device rocking initially caused
+additional bottom-contact artifacts. A clean 28.32-28.52 second interval then
+isolated the intended condition: channel 1 was beyond 20,000 counts for 100% of
+samples while channel 2 never crossed the threshold. Both channels returned to
+normal after the left fingers were restored.
 
 The complementary dependencies identify channel 1 as lead I (LA-RA) and channel
 2 as lead II (LL-RA). The live display now removes the provisional asterisks.
 This experiment confirms channel identity, not signal polarity or volts per raw
 count; those remain open calibration tasks.
 
-A final 10-second `--live` verification wrote
-`kardia-live-confirmed-labels-2026-07-23.csv` while rendering all six confirmed
+A final 10-second `--live` verification rendered all six confirmed
 labels without asterisks. It captured 332 packets / 11,952 bytes, representing
 2,988 channel pairs or 9.960 seconds at 300 Hz.
 
 ### 2026-07-23: M4 Dual-Lead 600 Hz Probe
 
-The device accepted a write of `M4 K934de27399369534` and returned command
-indication `0x03`. A 15-second raw capture then produced 499 ECG notifications /
-17,964 bytes. Every notification was 36 bytes, and the 14.938794-second
+The device accepted a redacted M4 compatibility command and returned command
+indication `0x03`. A 15-second raw capture then produced 499 ECG notifications
+/ 17,964 bytes. Every notification was 36 bytes, and the 14.938794-second
 first-to-last packet span gave a cadence of 33.336 packets/s.
 
 The payload remained consistent with the confirmed M2 layout:
@@ -286,13 +282,14 @@ higher internal ADC rate that is still decimated to the same 300 Hz transport.
 Do not decode or label M4 captures as 600 Hz without further evidence.
 
 Raw capture format v2 now names these header fields `requested_mode`,
-`nominal_sample_rate_hz`, and `nominal_leads` so APK-derived intent cannot be
-mistaken for observation. The shared capture parser remains compatible with v1.
+`nominal_sample_rate_hz`, and `nominal_leads` so nominal compatibility metadata
+cannot be mistaken for observation. The shared capture parser remains
+compatible with v1.
 The result above can be reproduced without an ad hoc analysis script:
 
 ```sh
 cargo run -p kardia-cli -- inspect-raw \
-    captures/kardia-m4-raw-2026-07-23.csv
+    captures/local-capture.csv
 ```
 
 The inspector reports requested metadata separately from payload length

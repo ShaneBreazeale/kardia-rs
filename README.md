@@ -38,13 +38,13 @@ renders printable six-lead ECG reports as vector PDF or SVG.
 
 ## Status
 
-Tested with a `Kardia6L F241` running firmware 3.0.1 on macOS 15.7.4:
+Tested with a KardiaMobile 6L running firmware 3.0.1 on macOS 15.7.4:
 
 | Capability | Status |
 | --- | --- |
 | BLE scan, connection, GATT discovery, and characteristic reads | Confirmed |
 | Encrypted/bonded vendor characteristic access | Confirmed |
-| Unlock/mode command generation | Confirmed against APK and device |
+| Compatibility command generation | Confirmed on a normally bonded device |
 | M2 dual-channel stream | 36-byte packets, 9 interleaved `i16` pairs, 300 Hz/channel |
 | Channel identity | Channel 1 = lead I; channel 2 = lead II |
 | Live I/II/III/aVR/aVL/aVF display | Working in uncalibrated raw counts |
@@ -57,16 +57,16 @@ Tested with a `Kardia6L F241` running firmware 3.0.1 on macOS 15.7.4:
 | Volts-per-count | Provisional inference: `10 mV / 65536` per stored count; simulator validation pending |
 | Linux and Windows BLE capture | Architecturally supported, not yet device-tested |
 
-The detailed evidence log is in
-[docs/re/kardia-6l.md](docs/re/kardia-6l.md). APK-derived constants and native
-decoder boundaries are documented in
-[docs/re/apk-inspection.md](docs/re/apk-inspection.md).
+The sanitized protocol evidence log is in
+[docs/re/kardia-6l.md](docs/re/kardia-6l.md). Public evidence and redaction
+boundaries are documented in
+[docs/re/protocol-provenance.md](docs/re/protocol-provenance.md).
 
 ## Features
 
 - Discovers Kardia-like BLE advertisements and inspects GATT services.
-- Reproduces the vendor unlock command:
-  `<mode> K<sha256("Triangle" + device_name)[..16]>`.
+- Builds and sends the device compatibility command only after the operating
+  system establishes a bonded, encrypted link.
 - Journals connection, bonding, subscription, unlock, and collection stages.
 - Preserves raw command indications and ECG notifications before decoding.
 - Displays a throttled six-lead view while lossless M2 capture continues.
@@ -333,7 +333,7 @@ At 33 1/3 packets/s, that is 300 samples/s/channel. Controlled contact-removal
 tests identify channel 1 as lead I and channel 2 as lead II. Standard limb-lead
 relationships derive the remaining four leads.
 
-M4 is present in the APK as “dual lead, 600 Hz.” On the tested device it
+M4 was probed as a nominal dual-lead 600 Hz request. On the tested device it
 returned indication `0x03`, but still produced 36-byte packets at 33.336
 packets/s that decode cleanly as the same 300 Hz M2-compatible transport. The
 software therefore records M4 raw data but does not label or export it as 600
@@ -346,7 +346,7 @@ Hz.
 | `crates/kardia-core` | Protocol-neutral samples, timestamps, recording metadata, and limb-lead derivation |
 | `crates/kardia-ble` | Device identification, mode commands, live BLE capture, raw capture parsing, and packet decoding |
 | `crates/kardia-cli` | Scan/probe/capture/inspect/export workflows and live terminal view |
-| `docs/re` | Evidence log, APK findings, hypotheses, and unresolved questions |
+| `docs/re` | Sanitized protocol evidence, hypotheses, and unresolved questions |
 | `scripts/bleak_probe.py` | Independent Python/CoreBluetooth probe for comparing `bleak` with `btleplug` |
 
 The BLE layer owns device evidence and lossless capture. The core crate remains
