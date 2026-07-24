@@ -1,5 +1,7 @@
 /target/
 .DS_Store
 /.venv/
+# Live captures may contain personal health data. Keep them local unless a
+# deliberately anonymized fixture is selected for protocol regression tests.
 /captures/
 __pycache__/

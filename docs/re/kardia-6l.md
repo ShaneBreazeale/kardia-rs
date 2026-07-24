@@ -150,16 +150,165 @@ No key can be lifted from the APK to bypass this. The AliveCor app calls bare `c
 
 Next action: clear the existing bond (close the AliveCor app, forget the device on the phone, pull the Kardia battery ~15s to reset stored pairing), wake the device, and rerun the probe while watching for the macOS pairing dialog. Retry if the first attempt hangs — bonding is unreliable by design. Once a bond exists it is system-wide, so the Rust/`btleplug` capture path should then complete the same writes.
 
-## Working Assumptions
+### 2026-07-23: Capture Reliability Audit
 
-- A six-lead limb ECG can be represented by independent leads I and II, with III, aVR, aVL, and aVF derived.
+The raw capture path now creates its `btleplug` notification receiver before
+enabling command indications, writing the unlock command, or enabling ECG
+notifications. `btleplug` uses a broadcast channel for these events, so the
+previous ordering could lose an immediate command acknowledgement or the
+first ECG packets before a receiver existed.
+
+Capture files are now opened as soon as a peripheral is selected and contain
+timestamped setup-stage records. Failed authentication, CCCD, and unlock
+attempts therefore leave a replayable diagnostic artifact. The peripheral is
+also disconnected on every exit path so a failed attempt does not consume the
+device's next short advertising window.
+
+### 2026-07-23: Fresh Bond and First Live M2 Capture
+
+Host: macOS 15.7.4 via `btleplug` 0.11.8/CoreBluetooth
+
+Procedure:
+
+1. Closed the AliveCor app and cleared the phone-side relationship.
+2. Power-cycled the Kardia and woke it for a fresh host connection.
+3. Ran `capture-raw` first so GATT inspection did not consume the short
+   advertising window.
+
+Command:
+
+```sh
+cargo run -p kardia-cli -- capture-raw --rescan 60 --seconds 30 \
+    --out captures/kardia-live-2026-07-23.csv
+```
+
+Result:
+
+- Device: `Kardia6L F241`, firmware previously observed as 3.0.1.
+- Command indication subscription: success.
+- Unlock/mode write: `M2 K934de27399369534`, success.
+- Command indication received: `0x01`.
+- ECG notification subscription: success.
+- Capture: 1,000 ECG packets / 36,000 bytes in 30 seconds.
+- Every ECG payload was 36 bytes.
+- Observed packet cadence: 33.337 packets/s over the capture.
+
+Confirmed `M2` frame interpretation:
+
+- nine sample pairs per notification;
+- each channel value is a little-endian signed 16-bit integer;
+- values are interleaved `channel 1, channel 2`;
+- 33 1/3 packets/s × 9 sample pairs/packet = 300 samples/s/channel.
+
+Little-endian interleaving is strongly supported by continuity: its median
+absolute within-packet and packet-boundary deltas were both 104 raw counts.
+Big-endian candidates had median deltas around 18,432 counts, and splitting
+each packet into channel blocks produced much worse within-packet continuity.
+
+The decoder preserves the two raw channels without scaling or bit masking.
+Channel identity was later confirmed by controlled electrode-removal tests.
+Signal polarity and ADC-to-voltage calibration remain unknown.
+
+### 2026-07-23: Labeled Live Monitor Verification
+
+Added a throttled `--live` observer to `capture-raw`. It renders `Ch1/I*`,
+`Ch2/II*`, `III*`, `aVR*`, `aVL*`, and `aVF*` from decoded M2 frames while the
+capture loop continues to persist every raw notification first. The asterisks
+make the unverified channel-to-lead mapping visible in the UI.
+
+Command:
+
+```sh
+cargo run -p kardia-cli -- capture-raw --live --rescan 60 --seconds 15 \
+    --out captures/kardia-live-labeled-2026-07-23.csv
+```
+
+Result:
+
+- saved bond reused successfully with no new pairing failure;
+- unlock response `0x01`;
+- 499 ECG packets / 17,964 bytes;
+- all 499 payloads were 36 bytes;
+- 33.329 packets/s over the captured span;
+- 4,491 decoded channel pairs, representing 14.970 seconds at 300 Hz;
+- labeled six-lead values updated in place without interrupting raw capture.
+
+### 2026-07-23: Controlled Electrode Mapping
+
+Two complementary contact-removal captures were recorded with the device arrow
+pointing away from the torso, both top electrodes under the corresponding
+fingers, and the bottom electrode on the bare left knee.
+
+In `kardia-mapping-leg-off-2026-07-23.csv`, removing the bottom/left-leg
+electrode produced two repeatable channel-2 rail episodes near +/-25,100 raw
+counts. During the cleaner 17.233-18.697 second episode, channel 2 was beyond
+20,000 counts for 79.5% of samples while channel 1 never crossed that threshold.
+Both channels returned to normal after contact was restored.
+
+In `kardia-mapping-left-fingers-off-2026-07-23.csv`, device rocking initially
+caused additional bottom-contact artifacts. A clean 28.32-28.52 second interval
+then isolated the intended condition: channel 1 was beyond 20,000 counts for
+100% of samples while channel 2 never crossed the threshold. Both channels
+returned to normal after the left fingers were restored.
+
+The complementary dependencies identify channel 1 as lead I (LA-RA) and channel
+2 as lead II (LL-RA). The live display now removes the provisional asterisks.
+This experiment confirms channel identity, not signal polarity or volts per raw
+count; those remain open calibration tasks.
+
+A final 10-second `--live` verification wrote
+`kardia-live-confirmed-labels-2026-07-23.csv` while rendering all six confirmed
+labels without asterisks. It captured 332 packets / 11,952 bytes, representing
+2,988 channel pairs or 9.960 seconds at 300 Hz.
+
+### 2026-07-23: M4 Dual-Lead 600 Hz Probe
+
+The device accepted a write of `M4 K934de27399369534` and returned command
+indication `0x03`. A 15-second raw capture then produced 499 ECG notifications /
+17,964 bytes. Every notification was 36 bytes, and the 14.938794-second
+first-to-last packet span gave a cadence of 33.336 packets/s.
+
+The payload remained consistent with the confirmed M2 layout:
+
+- nine little-endian signed 16-bit channel pairs per packet;
+- 33.336 packets/s x 9 pairs = 300.024 sample pairs/s;
+- median absolute adjacent deltas of 108 and 92 raw counts;
+- 100% of values in both channels divisible by four.
+
+Reinterpreting each packet as 18 interleaved signed 8-bit pairs would nominally
+produce 600 pairs/s, but the resulting channels alternate 16-bit low and high
+bytes and do not form two plausible signals. The capture therefore contains no
+evidence of an exposed 600 Hz dual-lead stream.
+
+The meaning of indication `0x03` is not yet confirmed. It may echo the
+zero-based M4 mode index, report an unsupported mode/fallback, or select a
+higher internal ADC rate that is still decimated to the same 300 Hz transport.
+Do not decode or label M4 captures as 600 Hz without further evidence.
+
+Raw capture format v2 now names these header fields `requested_mode`,
+`nominal_sample_rate_hz`, and `nominal_leads` so APK-derived intent cannot be
+mistaken for observation. The shared capture parser remains compatible with v1.
+The result above can be reproduced without an ad hoc analysis script:
+
+```sh
+cargo run -p kardia-cli -- inspect-raw \
+    captures/kardia-m4-raw-2026-07-23.csv
+```
+
+The inspector reports requested metadata separately from payload length
+distribution, packet cadence, command indication bytes, M2 packet
+compatibility, and the sample rate implied by that observed transport. The M2
+exporter also refuses captures whose header requested another mode.
+
+## Remaining Assumptions
+
 - Raw units should stay unscaled until calibration is confirmed.
 - BLE packet timing may matter; preserve receive timestamps even if packet payloads contain sequence numbers.
 
 ## Open Questions
 
 - Does the device also advertise the older 6L single-lead service in current firmware?
-- Does the stream expose one lead pair per packet, interleaved channels, or compressed batches?
-- Are samples signed 16-bit, 24-bit, delta encoded, encrypted, or framed with checksums?
-- Does 600 Hz mode work on the 6L hardware and app version under test?
+- Do command indications `0x00` through `0x03` echo the selected mode index?
+- Does M4 fall back to M2, or does it sample internally at 600 Hz and export a
+  decimated 300 Hz stream?
 - What do `ac060005` and `ac060006` contain?

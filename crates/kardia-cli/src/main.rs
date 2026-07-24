@@ -1,6 +1,10 @@
-use anyhow::Result;
+mod live_view;
+mod raw_commands;
+
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use kardia_ble::{CaptureOptions, EcgMode};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -82,6 +86,22 @@ enum Command {
         /// Only subscribe to ECG notifications; skip command indications and unlock write.
         #[arg(long)]
         listen_only: bool,
+        /// Show a throttled, labeled six-lead view while preserving every raw packet.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Inspect requested mode metadata and observed raw transport properties.
+    InspectRaw {
+        /// Raw capture produced by `capture-raw`.
+        input: PathBuf,
+    },
+    /// Decode a confirmed M2 raw capture and export six limb leads.
+    ExportSixLeadM2 {
+        /// Raw capture produced by `capture-raw`.
+        input: PathBuf,
+        /// Destination CSV path.
+        #[arg(short, long)]
+        out: PathBuf,
     },
 }
 
@@ -128,27 +148,34 @@ async fn main() -> Result<()> {
             verbose,
             no_command_indications,
             listen_only,
+            live,
         } => {
-            capture_raw(CaptureOptions {
-                target: target.unwrap_or_default(),
-                out,
-                seconds,
-                rescan_seconds: rescan,
-                mode: mode.into(),
-                verbose,
-                command_indications: !no_command_indications && !listen_only,
-                unlock_write: !listen_only,
-            })
+            capture_raw(
+                CaptureOptions {
+                    target: target.unwrap_or_default(),
+                    out,
+                    seconds,
+                    rescan_seconds: rescan,
+                    mode: mode.into(),
+                    verbose,
+                    command_indications: !no_command_indications && !listen_only,
+                    unlock_write: !listen_only,
+                },
+                live,
+            )
             .await
         }
+        Command::InspectRaw { input } => raw_commands::inspect_raw(&input),
+        Command::ExportSixLeadM2 { input, out } => raw_commands::export_six_lead_m2(&input, &out),
     }
 }
 
 fn doctor() -> Result<()> {
     println!("kardia-rs workspace");
     println!("core: ECG sample and six-lead derivation types available");
-    println!("ble: live scan, GATT dump, and raw capture paths available through btleplug");
-    println!("cli: operational");
+    println!("ble: live scan, GATT inspection, journaled raw capture, and M2 decoding available");
+    println!("cli: live M2 view, raw transport inspection, and six-lead CSV export available");
+    println!("limits: signal polarity, physical calibration, and exposed M4 600 Hz remain unknown");
     Ok(())
 }
 
@@ -161,7 +188,8 @@ fn capture_plan() -> Result<()> {
     println!("4. enable indications on the command characteristic");
     println!("5. write the mode/unlock command, e.g. M2 K<sha256(Triangle + device_name)[0..16]>");
     println!("6. enable notifications on the ECG characteristic and persist every raw payload with timestamps");
-    println!("7. decode only from replayable raw fixtures after packet structure is confirmed");
+    println!("7. inspect requested metadata separately from observed packet shape and cadence");
+    println!("8. decode only from replayable raw fixtures after packet structure is confirmed");
     Ok(())
 }
 
@@ -222,10 +250,31 @@ async fn notify_probe(rescan: u64, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn capture_raw(options: CaptureOptions) -> Result<()> {
+async fn capture_raw(options: CaptureOptions, live: bool) -> Result<()> {
     let out = options.out.clone();
     let seconds = options.seconds;
-    let stats = if options.target.is_empty() {
+    let stats = if live {
+        if options.mode != EcgMode::DualLead300Hz {
+            return Err(anyhow!(
+                "--live currently requires --mode m2; decoding for {} is not confirmed",
+                options.mode.setting()
+            ));
+        }
+        println!(
+            "live labels: Ch1/I and Ch2/II confirmed by electrode-removal tests; polarity and scale remain uncalibrated"
+        );
+        let mut frame_count = 0u64;
+        let result = kardia_ble::capture_raw_with_m2_observer(options, move |_, frame| {
+            frame_count += 1;
+            if frame_count == 1 || frame_count % 4 == 0 {
+                print!("\r\x1b[2K{}", live_view::format_m2(frame_count, frame));
+                std::io::stdout().flush().ok();
+            }
+        })
+        .await;
+        println!();
+        result?
+    } else if options.target.is_empty() {
         kardia_ble::live::capture_raw_first_kardia(options).await?
     } else {
         kardia_ble::live::capture_raw(options).await?
@@ -238,5 +287,6 @@ async fn capture_raw(options: CaptureOptions) -> Result<()> {
         seconds,
         out.display()
     );
+    raw_commands::inspect_raw(&out)?;
     Ok(())
 }

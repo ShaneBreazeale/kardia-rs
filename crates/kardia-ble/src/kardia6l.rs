@@ -39,14 +39,17 @@ impl EcgMode {
         }
     }
 
-    pub const fn lead_count(self) -> u8 {
+    /// Lead count implied by the APK mode name, not independently observed.
+    pub const fn nominal_lead_count(self) -> u8 {
         match self {
             Self::SingleLead300Hz | Self::SingleLead600Hz => 1,
             Self::DualLead300Hz | Self::DualLead600Hz => 2,
         }
     }
 
-    pub const fn sample_rate_hz(self) -> u16 {
+    /// Sample rate implied by the APK mode name, not necessarily the rate
+    /// exposed by the device's notification transport.
+    pub const fn nominal_sample_rate_hz(self) -> u16 {
         match self {
             Self::SingleLead300Hz | Self::DualLead300Hz => 300,
             Self::SingleLead600Hz | Self::DualLead600Hz => 600,
@@ -103,9 +106,9 @@ mod tests {
     #[test]
     fn reports_mode_metadata() {
         assert_eq!(EcgMode::DualLead300Hz.setting(), "M2");
-        assert_eq!(EcgMode::DualLead300Hz.lead_count(), 2);
-        assert_eq!(EcgMode::DualLead300Hz.sample_rate_hz(), 300);
+        assert_eq!(EcgMode::DualLead300Hz.nominal_lead_count(), 2);
+        assert_eq!(EcgMode::DualLead300Hz.nominal_sample_rate_hz(), 300);
         assert_eq!(EcgMode::DualLead600Hz.setting(), "M4");
-        assert_eq!(EcgMode::DualLead600Hz.sample_rate_hz(), 600);
+        assert_eq!(EcgMode::DualLead600Hz.nominal_sample_rate_hz(), 600);
     }
 }

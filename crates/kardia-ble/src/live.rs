@@ -3,6 +3,7 @@ use crate::kardia6l::{
     command_for_mode, uuid_matches, EcgMode, BATTERY_LEVEL_CHARACTERISTIC_UUID,
     KARDIA_6L_SIX_LEAD_CMD_CHARACTERISTIC_UUID, KARDIA_6L_SIX_LEAD_ECG_CHARACTERISTIC_UUID,
 };
+use crate::protocol::{decode_m2_notification, M2Frame};
 use anyhow::{anyhow, Context, Result};
 use btleplug::api::{
     BDAddr, Central, CentralEvent, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
@@ -94,35 +95,96 @@ pub async fn read_probe_first_kardia(rescan: Duration, verbose: bool) -> Result<
 }
 
 pub async fn capture_raw(options: CaptureOptions) -> Result<RawCaptureStats> {
-    let mgr = manager().await?;
-    let adapter = default_adapter(&mgr).await?;
-    scan_with_adapter(&adapter, Duration::from_secs(options.rescan_seconds)).await?;
-    let peripheral = resolve_peripheral(&adapter, &options.target).await?;
-    capture_raw_from_peripheral(peripheral, options).await
+    capture_raw_with_m2_observer(options, |_, _| {}).await
 }
 
 pub async fn capture_raw_first_kardia(mut options: CaptureOptions) -> Result<RawCaptureStats> {
-    let mgr = manager().await?;
-    let adapter = default_adapter(&mgr).await?;
-    let peripheral = scan_first_kardia_peripheral(
-        &adapter,
-        Duration::from_secs(options.rescan_seconds),
-        options.verbose,
-    )
-    .await?;
-    if let Some(props) = peripheral.properties().await? {
-        if let Some(name) = props.local_name {
-            options.target = name;
-        }
-    }
-    capture_raw_from_peripheral(peripheral, options).await
+    options.target.clear();
+    capture_raw_with_m2_observer(options, |_, _| {}).await
 }
 
-async fn capture_raw_from_peripheral(
+/// Capture raw notifications while observing each successfully decoded M2
+/// frame. The observer runs inline and must remain fast; raw persistence occurs
+/// before it is called.
+pub async fn capture_raw_with_m2_observer<F>(
+    mut options: CaptureOptions,
+    mut observer: F,
+) -> Result<RawCaptureStats>
+where
+    F: FnMut(u128, &M2Frame),
+{
+    let mgr = manager().await?;
+    let adapter = default_adapter(&mgr).await?;
+    let peripheral = if options.target.is_empty() {
+        let peripheral = scan_first_kardia_peripheral(
+            &adapter,
+            Duration::from_secs(options.rescan_seconds),
+            options.verbose,
+        )
+        .await?;
+        if let Some(props) = peripheral.properties().await? {
+            if let Some(name) = props.local_name {
+                options.target = name;
+            }
+        }
+        peripheral
+    } else {
+        scan_with_adapter(&adapter, Duration::from_secs(options.rescan_seconds)).await?;
+        resolve_peripheral(&adapter, &options.target).await?
+    };
+    capture_raw_from_peripheral(peripheral, options, &mut observer).await
+}
+
+async fn capture_raw_from_peripheral<F>(
     peripheral: Peripheral,
     options: CaptureOptions,
-) -> Result<RawCaptureStats> {
-    connect_and_discover(&peripheral, options.verbose).await?;
+    observer: &mut F,
+) -> Result<RawCaptureStats>
+where
+    F: FnMut(u128, &M2Frame),
+{
+    let mut writer = open_capture_file(&options.out)?;
+    write!(
+        writer,
+        "# kardia_raw_capture_v2 started_unix_micros={} platform={} peripheral_id={:?} target={:?}",
+        unix_micros(SystemTime::now())?,
+        std::env::consts::OS,
+        peripheral.id(),
+        options.target,
+    )?;
+    if options.unlock_write {
+        writeln!(
+            writer,
+            " requested_mode={} nominal_sample_rate_hz={} nominal_leads={}",
+            options.mode.setting(),
+            options.mode.nominal_sample_rate_hz(),
+            options.mode.nominal_lead_count(),
+        )?;
+    } else {
+        writeln!(writer, " requested_mode=none")?;
+    }
+    writer.flush()?;
+
+    let result = capture_raw_session(&peripheral, &options, &mut writer, observer).await;
+    if let Err(err) = &result {
+        record_capture_stage(&mut writer, "capture", "failed", &format!("{err:#}")).ok();
+    }
+    writer.flush().ok();
+    peripheral.disconnect().await.ok();
+    result
+}
+
+async fn capture_raw_session<F>(
+    peripheral: &Peripheral,
+    options: &CaptureOptions,
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    observer: &mut F,
+) -> Result<RawCaptureStats>
+where
+    F: FnMut(u128, &M2Frame),
+{
+    let connect_result = connect_and_discover(peripheral, options.verbose).await;
+    record_stage_result(writer, "connect_and_discover", connect_result)?;
 
     let props = peripheral
         .properties()
@@ -136,49 +198,72 @@ async fn capture_raw_from_peripheral(
 
     let cmd_uuid = parse_uuid(KARDIA_6L_SIX_LEAD_CMD_CHARACTERISTIC_UUID)?;
     let ecg_uuid = parse_uuid(KARDIA_6L_SIX_LEAD_ECG_CHARACTERISTIC_UUID)?;
-    let cmd_char = find_characteristic(&peripheral, cmd_uuid)?;
-    let ecg_char = find_characteristic(&peripheral, ecg_uuid)?;
+    let cmd_char = find_characteristic(peripheral, cmd_uuid)?;
+    let ecg_char = find_characteristic(peripheral, ecg_uuid)?;
     let command = command_for_mode(device_name, options.mode);
+    writeln!(
+        writer,
+        "# device device_name={device_name:?} command={command:?} command_uuid={cmd_uuid} ecg_uuid={ecg_uuid}"
+    )?;
+    writeln!(writer, "# unix_micros,characteristic_uuid,payload_hex")?;
+    writer.flush()?;
+
+    // btleplug's notification stream is backed by a broadcast receiver. Create
+    // the receiver before subscribing or writing so an immediate command
+    // indication (or the first ECG packet) cannot be lost.
+    let notifications_result = peripheral
+        .notifications()
+        .await
+        .context("create notification stream");
+    let mut notifications =
+        record_stage_result(writer, "create_notification_stream", notifications_result)?;
 
     if options.command_indications {
         if options.verbose {
             eprintln!("subscribing to command indications on {cmd_uuid}");
         }
-        ble_timeout(
+        let subscribe_result = ble_timeout(
             "enable command indications",
             peripheral.subscribe(&cmd_char),
             Duration::from_secs(45),
         )
-        .await?;
-    } else if options.verbose {
-        eprintln!("skipping command indications on {cmd_uuid}");
+        .await;
+        record_stage_result(writer, "enable_command_indications", subscribe_result)?;
+    } else {
+        if options.verbose {
+            eprintln!("skipping command indications on {cmd_uuid}");
+        }
+        record_capture_stage(writer, "enable_command_indications", "skipped", "disabled")?;
     }
     if options.unlock_write {
         if options.verbose {
             eprintln!("writing unlock/mode command {command:?}");
         }
-        ble_timeout(
+        let write_result = ble_timeout(
             "write unlock command",
             peripheral.write(&cmd_char, command.as_bytes(), WriteType::WithResponse),
             Duration::from_secs(45),
         )
         .await
-        .with_context(|| format!("write unlock command {command:?}"))?;
-    } else if options.verbose {
-        eprintln!("skipping unlock/mode command {command:?}");
+        .with_context(|| format!("write unlock command {command:?}"));
+        record_stage_result(writer, "write_unlock_command", write_result)?;
+    } else {
+        if options.verbose {
+            eprintln!("skipping unlock/mode command {command:?}");
+        }
+        record_capture_stage(writer, "write_unlock_command", "skipped", "listen-only")?;
     }
     if options.verbose {
         eprintln!("subscribing to ECG notifications on {ecg_uuid}");
     }
-    ble_timeout(
+    let subscribe_result = ble_timeout(
         "enable ECG notifications",
         peripheral.subscribe(&ecg_char),
         Duration::from_secs(45),
     )
-    .await?;
+    .await;
+    record_stage_result(writer, "enable_ecg_notifications", subscribe_result)?;
 
-    let mut notifications = peripheral.notifications().await?;
-    let mut writer = open_capture_file(&options.out)?;
     if options.verbose {
         eprintln!(
             "recording {}s of raw notifications to {}",
@@ -186,13 +271,11 @@ async fn capture_raw_from_peripheral(
             options.out.display()
         );
     }
-    writeln!(
+    record_capture_stage(
         writer,
-        "# unix_micros,characteristic_uuid,payload_hex mode={} sample_rate_hz={} leads={} device_name={:?}",
-        options.mode.setting(),
-        options.mode.sample_rate_hz(),
-        options.mode.lead_count(),
-        device_name
+        "collect_notifications",
+        "started",
+        &format!("duration_seconds={}", options.seconds),
     )?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(options.seconds);
@@ -219,6 +302,11 @@ async fn capture_raw_from_peripheral(
                 if notification.uuid == ecg_uuid {
                     stats.ecg_packets += 1;
                     stats.ecg_bytes += notification.value.len();
+                    if options.mode == EcgMode::DualLead300Hz {
+                        if let Ok(frame) = decode_m2_notification(&notification.value) {
+                            observer(now, &frame);
+                        }
+                    }
                 } else if notification.uuid == cmd_uuid {
                     stats.command_packets += 1;
                 }
@@ -227,8 +315,15 @@ async fn capture_raw_from_peripheral(
         }
     }
 
-    writer.flush().ok();
-    peripheral.disconnect().await.ok();
+    record_capture_stage(
+        writer,
+        "collect_notifications",
+        "complete",
+        &format!(
+            "ecg_packets={} ecg_bytes={} command_packets={}",
+            stats.ecg_packets, stats.ecg_bytes, stats.command_packets
+        ),
+    )?;
     Ok(stats)
 }
 
@@ -504,6 +599,37 @@ fn open_capture_file(path: &Path) -> Result<std::io::BufWriter<std::fs::File>> {
     Ok(std::io::BufWriter::new(
         std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?,
     ))
+}
+
+fn record_stage_result<T>(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    stage: &str,
+    result: Result<T>,
+) -> Result<T> {
+    match result {
+        Ok(value) => {
+            record_capture_stage(writer, stage, "ok", "")?;
+            Ok(value)
+        }
+        Err(err) => {
+            record_capture_stage(writer, stage, "failed", &format!("{err:#}")).ok();
+            Err(err)
+        }
+    }
+}
+
+fn record_capture_stage(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    stage: &str,
+    status: &str,
+    detail: &str,
+) -> Result<()> {
+    writeln!(
+        writer,
+        "# stage unix_micros={} name={stage:?} status={status:?} detail={detail:?}",
+        unix_micros(SystemTime::now())?
+    )?;
+    writer.flush().context("flush capture journal")
 }
 
 fn unix_micros(time: SystemTime) -> Result<u128> {
