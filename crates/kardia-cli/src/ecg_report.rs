@@ -491,15 +491,18 @@ fn render_svg(report: &ReportData, source_label: &str) -> String {
     if let Some(assessment) = &report.model_assessment {
         writeln!(
             svg,
-            r##"<text x="217" y="9" font-size="2.6" font-weight="700" fill="#b42318">ML RHYTHM SIMILARITY - RESEARCH</text>"##
+            r##"<text x="217" y="9" font-size="2.6" font-weight="700" fill="#b42318">AUTOMATED SUMMARY - RESEARCH</text>"##
         )
         .unwrap();
-        for (index, row) in model_rows(assessment).iter().enumerate() {
+        for (index, row) in automated_summary_rows(&report.measurements, assessment)
+            .iter()
+            .enumerate()
+        {
             writeln!(
                 svg,
-                r#"<text x="217" y="{}" font-size="2.25" font-family="Courier New,Courier,monospace">{}</text>"#,
-                14 + index * 5,
-                escape_xml(row)
+                r#"<text x="217" y="{}" font-size="2.05" font-family="Courier New,Courier,monospace">{}</text>"#,
+                14 + index * 4,
+                escape_xml(&truncate_text(row, 42))
             )
             .unwrap();
         }
@@ -751,17 +754,20 @@ fn render_pdf(report: &ReportData, source_label: &str) -> Result<Vec<u8>> {
             217.0,
             9.0,
             6.5,
-            "ML RHYTHM SIMILARITY - RESEARCH",
+            "AUTOMATED SUMMARY - RESEARCH",
             rgb(0.706, 0.137, 0.094),
         );
-        for (index, row) in model_rows(assessment).iter().enumerate() {
+        for (index, row) in automated_summary_rows(&report.measurements, assessment)
+            .iter()
+            .enumerate()
+        {
             add_pdf_text(
                 &layer,
                 &mono_font,
                 217.0,
-                14.0 + index as f64 * 5.0,
-                6.0,
-                row,
+                14.0 + index as f64 * 4.0,
+                5.5,
+                &truncate_text(row, 42),
                 rgb(0.067, 0.094, 0.153),
             );
         }
@@ -864,29 +870,52 @@ fn measurement_rows(measurements: &EcgMeasurements) -> [String; 6] {
     ]
 }
 
-fn model_rows(assessment: &ModelAssessment) -> [String; 4] {
+fn automated_summary_rows(
+    measurements: &EcgMeasurements,
+    assessment: &ModelAssessment,
+) -> [String; 5] {
     let result = match &assessment.decision {
         ModelDecision::Classified { class, confidence } => {
-            format!("RESULT {} {:.0}%", class.label(), confidence * 100.0)
+            format!("RHYTHM {} {:.0}%", class.label(), confidence * 100.0)
         }
         ModelDecision::Abstained { reason } if reason.contains("quality") => {
-            "RESULT ABSTAIN: SIGNAL QUALITY".to_owned()
+            "RHYTHM ABSTAIN: SIGNAL QUALITY".to_owned()
         }
         ModelDecision::Abstained { reason } if reason.contains("margin") => {
-            "RESULT ABSTAIN: CLASS MARGIN".to_owned()
+            "RHYTHM ABSTAIN: CLASS MARGIN".to_owned()
         }
-        ModelDecision::Abstained { .. } => "RESULT ABSTAIN: LOW CONFIDENCE".to_owned(),
+        ModelDecision::Abstained { .. } => "RHYTHM ABSTAIN: LOW CONFIDENCE".to_owned(),
     };
+    let short_model_id = assessment
+        .model_id
+        .strip_prefix("limb6-rhythm-")
+        .unwrap_or(&assessment.model_id);
     [
-        format!("MODEL {}", truncate_text(&assessment.model_id, 27)),
-        truncate_text(&result, 39),
+        result,
         format!(
-            "P SIN {:>3.0}% AF {:>3.0}% OTH {:>3.0}%",
+            "RATE {} BPM RR-CV {}% {}",
+            optional_u16(measurements.ventricular_rate_bpm),
+            optional_f64(measurements.rr_variability_percent, 1),
+            rr_variability_label(measurements.rr_variability_percent),
+        ),
+        format!(
+            "MED P>QRS {} PR {} QRS {} QTcF {} ms",
+            if measurements.pr_interval_ms.is_some() {
+                "YES"
+            } else {
+                "--"
+            },
+            optional_u16(measurements.pr_interval_ms),
+            optional_u16(measurements.qrs_duration_ms),
+            optional_u16(measurements.qtc_fridericia_ms),
+        ),
+        format!(
+            "ML SIN {:>3.0}% AF {:>3.0}% OTH {:>3.0}%",
             assessment.probabilities[0] * 100.0,
             assessment.probabilities[1] * 100.0,
             assessment.probabilities[2] * 100.0,
         ),
-        "KARDIA DOMAIN: UNVALIDATED".to_owned(),
+        format!("{short_model_id} | KARDIA DOMAIN UNVALIDATED"),
     ]
 }
 
@@ -914,13 +943,29 @@ fn optional_i16(value: Option<i16>) -> String {
         .unwrap_or_else(|| "--".to_owned())
 }
 
+fn optional_f64(value: Option<f64>, precision: usize) -> String {
+    value
+        .map(|value| format!("{value:.precision$}"))
+        .unwrap_or_else(|| "--".to_owned())
+}
+
+fn rr_variability_label(value: Option<f64>) -> &'static str {
+    match value {
+        Some(value) if value <= 10.0 => "LOW",
+        Some(value) if value <= 20.0 => "MID",
+        Some(_) => "HIGH",
+        None => "--",
+    }
+}
+
 fn console_measurements(measurements: &EcgMeasurements) -> String {
     format!(
-        "quality={} beats={} median_beats={} HR={} bpm PR={} ms QRS={} ms QT/QTcB={} / {} ms QTcF={} ms P-QRS-T={}/{}/{} deg",
+        "quality={} beats={} median_beats={} HR={} bpm RR-CV={}% PR={} ms QRS={} ms QT/QTcB={} / {} ms QTcF={} ms P-QRS-T={}/{}/{} deg",
         quality_label(measurements.quality),
         measurements.detected_beats,
         measurements.median_beats,
         optional_u16(measurements.ventricular_rate_bpm),
+        optional_f64(measurements.rr_variability_percent, 1),
         optional_u16(measurements.pr_interval_ms),
         optional_u16(measurements.qrs_duration_ms),
         optional_u16(measurements.qt_interval_ms),
@@ -981,6 +1026,14 @@ mod tests {
     }
 
     #[test]
+    fn rr_variability_summary_uses_descriptive_bands() {
+        assert_eq!(rr_variability_label(Some(4.3)), "LOW");
+        assert_eq!(rr_variability_label(Some(15.0)), "MID");
+        assert_eq!(rr_variability_label(Some(25.0)), "HIGH");
+        assert_eq!(rr_variability_label(None), "--");
+    }
+
+    #[test]
     fn report_svg_has_physical_page_and_safety_labels() {
         let report = ReportData {
             leads_mv: std::array::from_fn(|_| vec![0.0; 300]),
@@ -1026,9 +1079,10 @@ mod tests {
             }),
         };
         let svg = render_svg(&report, "capture.csv");
-        assert!(svg.contains("ML RHYTHM SIMILARITY - RESEARCH"));
+        assert!(svg.contains("AUTOMATED SUMMARY - RESEARCH"));
         assert!(svg.contains("sinus-rhythm-like"));
-        assert!(svg.contains("KARDIA DOMAIN: UNVALIDATED"));
+        assert!(svg.contains("RATE -- BPM"));
+        assert!(svg.contains("KARDIA DOMAIN UNVALIDATED"));
         assert!(svg.contains("not for diagnosis or treatment"));
     }
 

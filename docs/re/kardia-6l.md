@@ -383,6 +383,19 @@ integration; it is not evidence of Kardia-domain model accuracy.
 Training/evaluation provenance and held-out PTB-XL metrics are recorded in the
 [`limb6-rhythm-v0.1.0` model card](../../models/limb6-rhythm-v0.1.0.md).
 
+Version `limb6-rhythm-v0.2.0` expands training to the complete PTB-XL training
+fold, derives the four dependent limb leads from I/II during preparation,
+retains temporal variability during pooling, adds stronger acquisition
+augmentation, and calibrates each class separately. It also fixes the v0.1
+threshold search, which could fall back to 0.99 when a useful lower threshold
+was excluded before the search began.
+
+On held-out fold 10, v0.2 increased accepted-output coverage from 5.8% to
+48.3%, while accepted accuracy decreased from 92.2% to 83.5%. Macro AUROC
+increased from 0.832 to 0.839. This is a research tradeoff, not a claim of
+clinical improvement. Full per-class results are in the
+[`limb6-rhythm-v0.2.0` model card](../../models/limb6-rhythm-v0.2.0.md).
+
 ## Remaining Assumptions
 
 - Raw captures and CSV exports should stay unscaled until calibration is

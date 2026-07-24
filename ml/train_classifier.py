@@ -26,23 +26,26 @@ from ecg_ml import (
     LEADS,
     SAMPLE_RATE_HZ,
     SAMPLES,
-    LimbRhythmNet,
+    LimbRhythmNetV2,
     PreparedDataset,
     ProbabilityModel,
     prescribed_split,
 )
 
-MODEL_ID = "limb6-rhythm-v0.1.0"
-MINIMUM_THRESHOLDS = np.array([0.90, 0.90, 0.85], dtype=np.float64)
-MINIMUM_MARGIN = 0.20
+DEFAULT_MODEL_ID = "limb6-rhythm-v0.2.0"
+TARGET_PRECISIONS = np.array([0.85, 0.80, 0.85], dtype=np.float64)
+MINIMUM_THRESHOLD = 0.50
+MINIMUM_MARGIN = 0.15
+MINIMUM_ACCEPTED_PER_CLASS = 30
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=Path, default=Path("data/prepared"))
+    parser.add_argument("--data", type=Path, default=Path("data/prepared-v0.2"))
     parser.add_argument("--out", type=Path, default=Path("../models"))
     parser.add_argument("--checkpoints", type=Path, default=Path("checkpoints"))
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=20260723)
     parser.add_argument("--workers", type=int, default=0)
@@ -76,32 +79,46 @@ def infer(
     return np.concatenate(logits), np.concatenate(labels)
 
 
-def fit_temperature(logits: np.ndarray, labels: np.ndarray) -> float:
+def fit_vector_scaling(
+    logits: np.ndarray, labels: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Calibrate each class while regularizing toward the unscaled logits."""
     logits_tensor = torch.tensor(logits, dtype=torch.float32)
     labels_tensor = torch.tensor(labels, dtype=torch.long)
-    log_temperature = torch.zeros(1, requires_grad=True)
-    optimizer = torch.optim.LBFGS([log_temperature], lr=0.05, max_iter=100)
+    log_scales = torch.zeros(len(LABELS), requires_grad=True)
+    biases = torch.zeros(len(LABELS), requires_grad=True)
+    optimizer = torch.optim.LBFGS(
+        [log_scales, biases], lr=0.05, max_iter=150, line_search_fn="strong_wolfe"
+    )
 
     def closure() -> torch.Tensor:
         optimizer.zero_grad()
-        temperature = log_temperature.exp().clamp(0.05, 20.0)
-        loss = nn.functional.cross_entropy(logits_tensor / temperature, labels_tensor)
+        scales = log_scales.exp().clamp(0.05, 20.0)
+        calibrated = logits_tensor / scales + biases
+        regularization = 1e-3 * (log_scales.square().mean() + biases.square().mean())
+        loss = nn.functional.cross_entropy(calibrated, labels_tensor) + regularization
         loss.backward()
         return loss
 
     optimizer.step(closure)
-    return float(log_temperature.detach().exp().clamp(0.05, 20.0))
+    scales = log_scales.detach().exp().clamp(0.05, 20.0).numpy()
+    calibrated_biases = biases.detach().numpy()
+    calibrated_biases -= calibrated_biases.mean()
+    return scales, calibrated_biases
 
 
-def softmax(logits: np.ndarray, temperature: float) -> np.ndarray:
-    scaled = logits / temperature
-    scaled -= scaled.max(axis=1, keepdims=True)
-    exponent = np.exp(scaled)
+def calibrated_softmax(
+    logits: np.ndarray, scales: np.ndarray, biases: np.ndarray
+) -> np.ndarray:
+    calibrated = logits / scales + biases
+    calibrated -= calibrated.max(axis=1, keepdims=True)
+    exponent = np.exp(calibrated)
     return exponent / exponent.sum(axis=1, keepdims=True)
 
 
 def thresholds_for_precision(labels: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
-    thresholds = MINIMUM_THRESHOLDS.copy()
+    """Select the lowest useful validation threshold meeting each precision target."""
+    thresholds = np.ones(len(LABELS), dtype=np.float64)
     order = np.argsort(probabilities, axis=1)
     margin = (
         probabilities[np.arange(len(probabilities)), order[:, -1]]
@@ -110,20 +127,18 @@ def thresholds_for_precision(labels: np.ndarray, probabilities: np.ndarray) -> n
     winners = order[:, -1]
 
     for class_index in range(len(LABELS)):
-        for threshold in np.linspace(thresholds[class_index], 0.99, 100):
+        for threshold in np.linspace(MINIMUM_THRESHOLD, 0.995, 496):
             selected = (
                 (winners == class_index)
                 & (probabilities[:, class_index] >= threshold)
                 & (margin >= MINIMUM_MARGIN)
             )
-            if selected.sum() < 20:
+            if selected.sum() < MINIMUM_ACCEPTED_PER_CLASS:
                 continue
             precision = float((labels[selected] == class_index).mean())
-            if precision >= 0.90:
+            if precision >= TARGET_PRECISIONS[class_index]:
                 thresholds[class_index] = float(threshold)
                 break
-        else:
-            thresholds[class_index] = 0.99
     return thresholds
 
 
@@ -149,6 +164,20 @@ def metrics(
         if accepted.any()
         else None
     )
+    accepted_per_class = {}
+    for class_index, label in enumerate(LABELS):
+        selected = accepted & (predictions == class_index)
+        selected_count = int(selected.sum())
+        accepted_per_class[label] = {
+            "threshold": float(thresholds[class_index]),
+            "target_validation_precision": float(TARGET_PRECISIONS[class_index]),
+            "accepted_records": selected_count,
+            "accepted_precision": (
+                float((labels[selected] == class_index).mean())
+                if selected_count
+                else None
+            ),
+        }
     return {
         "records": int(labels.size),
         "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)),
@@ -177,6 +206,7 @@ def metrics(
             "coverage": float(accepted.mean()),
             "accepted_accuracy": accepted_accuracy,
             "accepted_records": int(accepted.sum()),
+            "per_class": accepted_per_class,
         },
     }
 
@@ -193,13 +223,18 @@ def main() -> None:
     folds = np.load(args.data / "folds.npy")
     split = prescribed_split(folds)
 
-    train_dataset = PreparedDataset(args.data, split.train, augment=True)
+    train_dataset = PreparedDataset(
+        args.data,
+        split.train,
+        augment=True,
+        augmentation_version=2,
+    )
     validation_dataset = PreparedDataset(args.data, split.validation)
     test_dataset = PreparedDataset(args.data, split.test)
 
     train_labels = labels[split.train]
     counts = np.bincount(train_labels, minlength=len(LABELS))
-    class_weights = np.sqrt(counts.sum() / np.maximum(counts, 1))
+    class_weights = counts.sum() / np.maximum(counts, 1)
     sample_weights = class_weights[train_labels]
     sampler = WeightedRandomSampler(
         torch.as_tensor(sample_weights, dtype=torch.double),
@@ -225,15 +260,15 @@ def main() -> None:
         num_workers=args.workers,
     )
 
-    model = LimbRhythmNet().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    model = LimbRhythmNetV2().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=7e-4, weight_decay=2e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
     )
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     best_macro_f1 = -1.0
     patience = 0
-    checkpoint = args.checkpoints / f"{MODEL_ID}.pt"
+    checkpoint = args.checkpoints / f"{args.model_id}.pt"
 
     print(f"device={device} train={len(split.train)} validation={len(split.validation)}")
     for epoch in range(1, args.epochs + 1):
@@ -247,6 +282,7 @@ def main() -> None:
             logits = model(inputs)
             loss = criterion(logits, target)
             loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
             total_loss += float(loss.detach()) * len(target)
             total_records += len(target)
@@ -272,22 +308,22 @@ def main() -> None:
             torch.save(model.state_dict(), checkpoint)
         else:
             patience += 1
-            if patience >= 5:
+            if patience >= 6:
                 print("early stopping")
                 break
 
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
     validation_logits, validation_labels = infer(model, validation_loader, device)
-    temperature = fit_temperature(validation_logits, validation_labels)
-    validation_probabilities = softmax(validation_logits, temperature)
+    scales, biases = fit_vector_scaling(validation_logits, validation_labels)
+    validation_probabilities = calibrated_softmax(validation_logits, scales, biases)
     thresholds = thresholds_for_precision(validation_labels, validation_probabilities)
 
     test_logits, test_labels = infer(model, test_loader, device)
-    test_probabilities = softmax(test_logits, temperature)
+    test_probabilities = calibrated_softmax(test_logits, scales, biases)
     test_metrics = metrics(test_labels, test_probabilities, thresholds)
 
-    export_model = ProbabilityModel(model.cpu().eval(), temperature).eval()
-    model_path = args.out / f"{MODEL_ID}.onnx"
+    export_model = ProbabilityModel(model.cpu().eval(), scales, biases).eval()
+    model_path = args.out / f"{args.model_id}.onnx"
     example = torch.zeros((1, len(LEADS), SAMPLES), dtype=torch.float32)
     torch.onnx.export(
         export_model,
@@ -311,7 +347,7 @@ def main() -> None:
     digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     manifest = {
         "schema_version": 1,
-        "model_id": MODEL_ID,
+        "model_id": args.model_id,
         "model_file": model_path.name,
         "sha256": digest,
         "research_only": True,
@@ -330,17 +366,33 @@ def main() -> None:
             "minimum_margin": MINIMUM_MARGIN,
             "requires_measurement_quality": "GOOD",
             "low_confidence_action": "abstain",
+            "threshold_selection": {
+                "split": "validation fold 9",
+                "target_precision": {
+                    LABELS[index]: float(TARGET_PRECISIONS[index])
+                    for index in range(len(LABELS))
+                },
+                "minimum_accepted_per_class": MINIMUM_ACCEPTED_PER_CLASS,
+            },
         },
         "training": {
             "dataset": "PTB-XL 1.0.3 records100",
             "prepared_dataset": dataset_summary,
+            "architecture": "temporal-statistics residual CNN v2",
+            "augmentation": (
+                "gain, time shift, global polarity, baseline wander, and white noise"
+            ),
             "label_policy": {
                 "sinus-rhythm-like": "SR present, AFIB absent, no listed signal contamination",
                 "af-like": "AFIB present, SR absent, no listed signal contamination",
                 "other/noisy": "all other rhythms or listed signal contamination",
             },
             "split": "strat_fold 1-8 train, 9 validation, 10 held-out test",
-            "temperature": temperature,
+            "calibration": {
+                "method": "regularized per-class vector scaling",
+                "scales": [float(value) for value in scales],
+                "biases": [float(value) for value in biases],
+            },
             "seed": args.seed,
         },
         "held_out_test": test_metrics,
@@ -351,9 +403,10 @@ def main() -> None:
             "Only two leads are independent; III/aVR/aVL/aVF are derived from I/II.",
             "No chest leads are present; unsupported conditions must not be inferred.",
             "A classified output means model similarity, not clinical confirmation.",
+            "Class thresholds are selected on one validation fold and require external validation.",
         ],
     }
-    manifest_path = args.out / f"{MODEL_ID}.json"
+    manifest_path = args.out / f"{args.model_id}.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(manifest, indent=2))
 

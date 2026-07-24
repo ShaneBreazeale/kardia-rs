@@ -18,6 +18,7 @@ pub struct EcgMeasurements {
     pub median_beats: usize,
     pub ventricular_rate_bpm: Option<u16>,
     pub average_rr_ms: Option<u16>,
+    pub rr_variability_percent: Option<f64>,
     pub pr_interval_ms: Option<u16>,
     pub qrs_duration_ms: Option<u16>,
     pub qt_interval_ms: Option<u16>,
@@ -36,6 +37,7 @@ impl EcgMeasurements {
             median_beats: 0,
             ventricular_rate_bpm: None,
             average_rr_ms: None,
+            rr_variability_percent: None,
             pr_interval_ms: None,
             qrs_duration_ms: None,
             qt_interval_ms: None,
@@ -110,6 +112,7 @@ pub fn analyze(leads_mv: &[Vec<f64>; 6], sample_rate_hz: usize) -> EcgMeasuremen
         let mut result = EcgMeasurements::insufficient(peaks.len());
         result.ventricular_rate_bpm = Some(ventricular_rate_bpm);
         result.average_rr_ms = Some(average_rr_ms);
+        result.rr_variability_percent = Some(rr_cv * 100.0);
         return result;
     }
 
@@ -232,6 +235,7 @@ pub fn analyze(leads_mv: &[Vec<f64>; 6], sample_rate_hz: usize) -> EcgMeasuremen
         median_beats: median_peaks.len(),
         ventricular_rate_bpm: Some(ventricular_rate_bpm),
         average_rr_ms: Some(average_rr_ms),
+        rr_variability_percent: Some(rr_cv * 100.0),
         pr_interval_ms,
         qrs_duration_ms,
         qt_interval_ms,

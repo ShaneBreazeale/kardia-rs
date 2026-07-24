@@ -21,14 +21,25 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, default=Path("data/ptb-xl"))
     parser.add_argument("--per-common-train-class", type=int, default=3_000)
+    parser.add_argument(
+        "--all-records",
+        action="store_true",
+        help="download every record instead of the smaller v0.1 training selection",
+    )
     parser.add_argument("--workers", type=int, default=48)
     parser.add_argument("--seed", type=int, default=20260723)
     return parser.parse_args()
 
 
 def choose_records(
-    metadata: list[dict[str, str]], per_common_class: int, seed: int
+    metadata: list[dict[str, str]],
+    per_common_class: int,
+    seed: int,
+    all_records: bool = False,
 ) -> list[dict[str, str]]:
+    if all_records:
+        return sorted(metadata, key=lambda row: int(row["ecg_id"]))
+
     held_out = [row for row in metadata if int(row["strat_fold"]) >= 9]
     training = [row for row in metadata if int(row["strat_fold"]) <= 8]
     by_label = {
@@ -66,7 +77,12 @@ def download_one(dataset: Path, relative_path: str) -> None:
 def main() -> None:
     args = parse_args()
     metadata = load_metadata(args.dataset / "ptbxl_database.csv")
-    selected = choose_records(metadata, args.per_common_train_class, args.seed)
+    selected = choose_records(
+        metadata,
+        args.per_common_train_class,
+        args.seed,
+        all_records=args.all_records,
+    )
     counts = {label: 0 for label in LABELS}
     for row in selected:
         counts[LABELS[classify_metadata(row)]] += 1
@@ -75,8 +91,12 @@ def main() -> None:
         "dataset": "PTB-XL 1.0.3 records100",
         "seed": args.seed,
         "policy": (
-            "all fold 9/10 records; all AF-like fold 1-8 records; fixed sample "
-            f"of up to {args.per_common_train_class} records from each common training class"
+            "all records"
+            if args.all_records
+            else (
+                "all fold 9/10 records; all AF-like fold 1-8 records; fixed sample "
+                f"of up to {args.per_common_train_class} records from each common training class"
+            )
         ),
         "records": len(selected),
         "labels": counts,

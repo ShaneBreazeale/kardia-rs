@@ -230,7 +230,7 @@ no ML runtime or model is used:
 ```sh
 cargo run -p kardia-cli -- render-ecg \
   captures/kardia-m2.csv \
-  --model models/limb6-rhythm-v0.1.0.json \
+  --model models/limb6-rhythm-v0.2.0.json \
   --out output/pdf/kardia-six-lead-with-ml.pdf
 ```
 
@@ -247,6 +247,10 @@ top probability is below its class-specific threshold, or the top-two class
 margin is too small. The report always labels the result as research-only and
 the Kardia domain as unvalidated.
 
+The automated summary keeps deterministic observations separate from the ML
+decision. It can still report rate, RR variability, P-before-QRS detection on
+the median beat, PR, QRS, and QTcF when the rhythm classifier abstains.
+
 The three outputs are similarity categories, not diagnoses:
 
 - `sinus-rhythm-like`: resembles public training records explicitly labeled
@@ -261,7 +265,8 @@ inferred from this device. The complete reproducible data-labeling, training,
 calibration, evaluation, and ONNX-export workflow is in
 [ml/README.md](ml/README.md). Architecture, thresholds, held-out results, and
 device-domain limitations are recorded in the
-[model card](models/limb6-rhythm-v0.1.0.md).
+[v0.2 model card](models/limb6-rhythm-v0.2.0.md). The more restrictive
+[v0.1 model card](models/limb6-rhythm-v0.1.0.md) is retained for comparison.
 
 ## Pairing and Troubleshooting
 

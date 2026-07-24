@@ -17,6 +17,7 @@ from ecg_ml import (
     SAMPLE_RATE_HZ,
     SAMPLES,
     classify_metadata,
+    derive_limb_leads,
     load_metadata,
     normalize_record,
 )
@@ -25,7 +26,13 @@ from ecg_ml import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, default=Path("data/ptb-xl"))
-    parser.add_argument("--out", type=Path, default=Path("data/prepared"))
+    parser.add_argument("--out", type=Path, default=Path("data/prepared-v0.2"))
+    parser.add_argument(
+        "--derive-limb-leads",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="derive III/aVR/aVL/aVF from I/II to match the device runtime",
+    )
     return parser.parse_args()
 
 
@@ -69,6 +76,8 @@ def main() -> None:
             raise ValueError(f"{record_path}: missing required limb lead") from error
 
         selected = physical[:, lead_indices].T
+        if args.derive_limb_leads:
+            selected = derive_limb_leads(selected[0], selected[1])
         if selected.shape[1] != SAMPLES:
             raise ValueError(f"{record_path}: expected {SAMPLES} samples, got {selected.shape[1]}")
         signals[index] = normalize_record(selected)
@@ -90,6 +99,11 @@ def main() -> None:
         "sample_rate_hz": SAMPLE_RATE_HZ,
         "samples": SAMPLES,
         "leads": LEADS,
+        "lead_source": (
+            "I/II measured; III/aVR/aVL/aVF algebraically derived"
+            if args.derive_limb_leads
+            else "six physical PTB-XL limb-lead channels"
+        ),
         "labels": {LABELS[index]: counts[index] for index in range(len(LABELS))},
         "split": "PTB-XL strat_fold 1-8 train, 9 validation, 10 test",
         "normalization": "per-lead median; global I/II p95 scale >=0.05 mV; clip +/-6",

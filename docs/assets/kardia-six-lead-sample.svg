@@ -458,11 +458,12 @@
 <text x="177" y="15" font-size="2.25" font-family="Courier New,Courier,monospace">QT/QTcB 377/405 ms</text>
 <text x="177" y="21" font-size="2.25" font-family="Courier New,Courier,monospace">QTcF        395 ms</text>
 <text x="177" y="27" font-size="2.25" font-family="Courier New,Courier,monospace">P-QRS-T*  61  62  48 deg</text>
-<text x="217" y="9" font-size="2.6" font-weight="700" fill="#b42318">ML RHYTHM SIMILARITY - RESEARCH</text>
-<text x="217" y="14" font-size="2.25" font-family="Courier New,Courier,monospace">MODEL limb6-rhythm-v0.1.0</text>
-<text x="217" y="19" font-size="2.25" font-family="Courier New,Courier,monospace">RESULT ABSTAIN: LOW CONFIDENCE</text>
-<text x="217" y="24" font-size="2.25" font-family="Courier New,Courier,monospace">P SIN  38% AF   0% OTH  62%</text>
-<text x="217" y="29" font-size="2.25" font-family="Courier New,Courier,monospace">KARDIA DOMAIN: UNVALIDATED</text>
+<text x="217" y="9" font-size="2.6" font-weight="700" fill="#b42318">AUTOMATED SUMMARY - RESEARCH</text>
+<text x="217" y="14" font-size="2.05" font-family="Courier New,Courier,monospace">RHYTHM ABSTAIN: LOW CONFIDENCE</text>
+<text x="217" y="18" font-size="2.05" font-family="Courier New,Courier,monospace">RATE 69 BPM RR-CV 4.3% LOW</text>
+<text x="217" y="22" font-size="2.05" font-family="Courier New,Courier,monospace">MED P&gt;QRS YES PR 143 QRS 100 QTcF 395 ms</text>
+<text x="217" y="26" font-size="2.05" font-family="Courier New,Courier,monospace">ML SIN  58% AF   0% OTH  42%</text>
+<text x="217" y="30" font-size="2.05" font-family="Courier New,Courier,monospace">v0.2.0 | KARDIA DOMAIN UNVALIDATED</text>
 <text x="11.5" y="45.667" font-size="4.1" font-weight="700">I</text>
 <text x="11.5" y="71.000" font-size="4.1" font-weight="700">II</text>
 <text x="11.5" y="96.333" font-size="4.1" font-weight="700">III</text>
